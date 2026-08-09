@@ -42,8 +42,9 @@ KV record as the redirect, so targeting costs nothing extra.
 
 **Analytics** — clicks and unique visitors over time, plus breakdowns by
 country, city, referrer, device, browser, OS, language, Cloudflare edge
-location, and network, with a live event feed. Visitors are counted with a
-salted per-link hash of IP + user agent; raw IP addresses are never stored.
+location, and network, with a live event feed showing the raw IP and user agent
+behind every click. Unique visitors are counted with a salted per-link hash of
+IP + user agent, stored alongside the raw values.
 
 **API** — `/api/v1/links` with bearer-token API keys managed from Settings.
 
@@ -171,6 +172,13 @@ window before every colo sees the update.
 **Permanent redirects hide repeat clicks.** `301`/`308` are cached by browsers,
 so those visitors never hit the Worker again. `302` is the default for that
 reason.
+
+**Raw IPs are stored.** Every click keeps the client address from
+`cf-connecting-ip` and the full user-agent string in `click.ip` /
+`click.user_agent`, so the event feed can show exactly who hit a link. That is
+personal data under GDPR and similar regimes — if you publish links to visitors
+in those jurisdictions, say so in your privacy notice and prune the `click`
+table on whatever retention schedule you have committed to.
 
 **Analytics Engine is optional.** When the `CLICKS_AE` binding exists each click
 is also written there for cheap long-term retention. The dashboard always reads

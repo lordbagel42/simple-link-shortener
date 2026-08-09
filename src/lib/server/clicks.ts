@@ -114,6 +114,7 @@ export async function recordClick(
 		userId: record.userId,
 		timestamp: now,
 		destination,
+		ip: visitor.ip,
 		visitorHash,
 		isNewVisitor,
 
@@ -188,8 +189,8 @@ async function hashVisitor(
 	visitor: VisitorSnapshot
 ): Promise<string | null> {
 	if (!visitor.ip) return null;
-	// Salted and scoped per link: the stored value can't be correlated across
-	// links or reversed back to an IP address.
+	// Salted and scoped per link, so unique-visitor counts stay meaningful even
+	// though the raw address is stored alongside in `click.ip`.
 	const salt = env.VISITOR_HASH_SALT ?? env.BETTER_AUTH_SECRET ?? 'link-shortener';
 	const hash = await sha256Hex(`${salt}:${linkId}:${visitor.ip}:${visitor.userAgent ?? ''}`);
 	return hash.slice(0, 32);

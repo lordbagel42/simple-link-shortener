@@ -159,7 +159,9 @@ export const click = sqliteTable(
 		/** Where this particular visitor was actually sent (rules can override). */
 		destination: text('destination').notNull(),
 
-		/* --- visitor identity (no raw IPs are ever stored) --- */
+		/* --- visitor identity --- */
+		/** Raw client address from `cf-connecting-ip`. */
+		ip: text('ip'),
 		/** SHA-256 of `salt:ip:user-agent`, truncated. Used for unique-visitor counts. */
 		visitorHash: text('visitor_hash'),
 		isNewVisitor: integer('is_new_visitor', { mode: 'boolean' }).notNull().default(true),
@@ -212,7 +214,8 @@ export const click = sqliteTable(
 	(t) => [
 		index('click_link_id_timestamp_idx').on(t.linkId, t.timestamp),
 		index('click_user_id_timestamp_idx').on(t.userId, t.timestamp),
-		index('click_visitor_hash_idx').on(t.linkId, t.visitorHash)
+		index('click_visitor_hash_idx').on(t.linkId, t.visitorHash),
+		index('click_ip_idx').on(t.ip)
 	]
 );
 

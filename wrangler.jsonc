@@ -43,7 +43,7 @@
 		{
 			"binding": "DB",
 			"database_name": "link-shortener",
-			"database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+			"database_id": "f4f5627e-0940-44d5-9406-ff54a7e28ce1",
 			"migrations_dir": "drizzle"
 		}
 	],
@@ -51,7 +51,7 @@
 	"kv_namespaces": [
 		{
 			"binding": "LINKS",
-			"id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+			"id": "5fd8fb0f9d8f40c89c13110e5fb41f87"
 		}
 	],
 

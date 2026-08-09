@@ -173,6 +173,8 @@ export async function recentClicks(
 			country: click.country,
 			city: click.city,
 			region: click.region,
+			ip: click.ip,
+			userAgent: click.userAgent,
 			deviceType: click.deviceType,
 			browser: click.browser,
 			os: click.os,

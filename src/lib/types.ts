@@ -98,6 +98,8 @@ export type RecentClick = {
 	country: string | null;
 	city: string | null;
 	region: string | null;
+	ip: string | null;
+	userAgent: string | null;
 	deviceType: string | null;
 	browser: string | null;
 	os: string | null;

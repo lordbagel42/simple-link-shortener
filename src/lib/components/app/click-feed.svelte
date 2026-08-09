@@ -48,11 +48,14 @@
 					</div>
 
 					<div class="hidden shrink-0 text-right sm:block">
-						<p class="text-muted-foreground text-xs" title={formatDateTime(click.timestamp)}>
-							{timeAgo(click.timestamp)}
+						<p
+							class="text-muted-foreground font-mono text-xs"
+							title={click.userAgent ?? 'No user agent sent'}
+						>
+							{click.ip ?? '—'}
 						</p>
-						<p class="text-muted-foreground/70 max-w-[220px] truncate text-[11px]">
-							{prettyUrl(click.destination, 32)}
+						<p class="text-muted-foreground/70 text-[11px]" title={formatDateTime(click.timestamp)}>
+							{timeAgo(click.timestamp)} · {prettyUrl(click.destination, 24)}
 						</p>
 					</div>
 				</div>

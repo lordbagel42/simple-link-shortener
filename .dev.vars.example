@@ -1,0 +1,14 @@
+# Copy to `.dev.vars` for local development. `.dev.vars` is gitignored.
+BETTER_AUTH_SECRET="local-development-secret-change-me-32chars"
+VISITOR_HASH_SALT="local-dev-salt"
+APP_URL="http://localhost:5173"
+SHORT_URL="http://localhost:5173/l"
+SHORT_HOST=""
+SHORT_PREFIX="/l"
+SIGNUP_MODE="open"
+
+# Optional social login
+# GITHUB_CLIENT_ID=""
+# GITHUB_CLIENT_SECRET=""
+# GOOGLE_CLIENT_ID=""
+# GOOGLE_CLIENT_SECRET=""

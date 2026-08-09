@@ -1,0 +1,82 @@
+const compact = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 });
+const plain = new Intl.NumberFormat('en');
+
+export function formatCount(value: number): string {
+	return value >= 10_000 ? compact.format(value) : plain.format(value);
+}
+
+export function formatNumber(value: number): string {
+	return plain.format(value);
+}
+
+const RELATIVE_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+	['year', 31_536_000_000],
+	['month', 2_592_000_000],
+	['week', 604_800_000],
+	['day', 86_400_000],
+	['hour', 3_600_000],
+	['minute', 60_000],
+	['second', 1000]
+];
+
+const relative = new Intl.RelativeTimeFormat('en', { numeric: 'auto' });
+
+export function timeAgo(value: Date | number | string | null | undefined): string {
+	if (!value) return 'never';
+	const time = new Date(value).getTime();
+	if (Number.isNaN(time)) return 'never';
+
+	const diff = time - Date.now();
+	for (const [unit, ms] of RELATIVE_UNITS) {
+		if (Math.abs(diff) >= ms || unit === 'second') {
+			return relative.format(Math.round(diff / ms), unit);
+		}
+	}
+	return 'just now';
+}
+
+const dateTime = new Intl.DateTimeFormat('en', {
+	dateStyle: 'medium',
+	timeStyle: 'short'
+});
+
+export function formatDateTime(value: Date | number | string | null | undefined): string {
+	if (!value) return '—';
+	const date = new Date(value);
+	return Number.isNaN(date.getTime()) ? '—' : dateTime.format(date);
+}
+
+const dateOnly = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' });
+
+/** `2026-08-09` or `2026-08-09T14:00` → `Aug 9` / `2 PM` */
+export function formatBucket(bucket: string): string {
+	const date = new Date(bucket.length > 10 ? `${bucket}:00Z` : `${bucket}T00:00:00Z`);
+	if (Number.isNaN(date.getTime())) return bucket;
+	return bucket.length > 10
+		? new Intl.DateTimeFormat('en', { hour: 'numeric' }).format(date)
+		: dateOnly.format(date);
+}
+
+/** `https://example.com/a/very/long/path?x=1` → `example.com/a/very/long/…` */
+export function prettyUrl(url: string, max = 48): string {
+	let value = url.replace(/^https?:\/\//, '').replace(/^www\./, '');
+	if (value.endsWith('/')) value = value.slice(0, -1);
+	return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
+/** Two-letter country code → flag emoji. */
+export function countryFlag(code: string | null | undefined): string {
+	if (!code || code.length !== 2 || !/^[a-zA-Z]{2}$/.test(code)) return '🌐';
+	return String.fromCodePoint(
+		...[...code.toUpperCase()].map((char) => 0x1f1a5 + char.charCodeAt(0))
+	);
+}
+
+/** A stable input for the datetime-local control. */
+export function toDateTimeLocal(value: Date | number | null | undefined): string {
+	if (!value) return '';
+	const date = new Date(value);
+	if (Number.isNaN(date.getTime())) return '';
+	const offset = date.getTimezoneOffset() * 60_000;
+	return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}

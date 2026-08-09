@@ -1,0 +1,66 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "simple-link-shortener",
+	"main": ".svelte-kit/cloudflare/_worker.js",
+	"compatibility_date": "2026-08-01",
+	// `nodejs_compat` supersedes `nodejs_als` and supplies the `node:` builtins
+	// that better-auth and Drizzle reach for. Required for the Worker to boot.
+	"compatibility_flags": ["nodejs_compat"],
+	"assets": {
+		"binding": "ASSETS",
+		"directory": ".svelte-kit/cloudflare"
+	},
+	"observability": {
+		"enabled": true
+	},
+
+	// The short-link route and the dashboard are served by the same Worker.
+	// `hooks.server.ts` decides which one a request belongs to.
+	//
+	// Uncomment and edit once the zone exists in your account:
+	// "routes": [
+	//   { "pattern": "links.raygen.dev", "custom_domain": true },
+	//   { "pattern": "raygen.dev/l/*", "zone_name": "raygen.dev" }
+	// ],
+
+	"vars": {
+		// Public origin of the management dashboard.
+		"APP_URL": "https://links.raygen.dev",
+		// Origin short links are generated against.
+		"SHORT_URL": "https://raygen.dev/l",
+		// Hostname that serves short links. Requests to this host never render the app.
+		"SHORT_HOST": "raygen.dev",
+		// Path prefix on SHORT_HOST that short links live under. Use "/" to serve
+		// short links from the root of the host instead.
+		"SHORT_PREFIX": "/l",
+		// "open" | "invite" | "closed". `invite` restricts sign-up to SIGNUP_ALLOWLIST.
+		"SIGNUP_MODE": "invite",
+		// Comma-separated emails or @domain suffixes allowed to sign up in invite mode.
+		"SIGNUP_ALLOWLIST": ""
+	},
+
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "link-shortener",
+			"database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+			"migrations_dir": "drizzle"
+		}
+	],
+
+	"kv_namespaces": [
+		{
+			"binding": "LINKS",
+			"id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+		}
+	],
+
+	// Optional: long-retention click analytics. Remove this block to disable —
+	// the dashboard reads from D1 either way.
+	"analytics_engine_datasets": [
+		{
+			"binding": "CLICKS_AE",
+			"dataset": "link_clicks"
+		}
+	]
+}

@@ -1,6 +1,6 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
-	"name": "simple-link-shortener",
+	"name": "links",
 	"main": ".svelte-kit/cloudflare/_worker.js",
 	"compatibility_date": "2026-08-01",
 	// `nodejs_compat` supersedes `nodejs_als` and supplies the `node:` builtins
@@ -64,7 +64,10 @@
 		"SHORT_PREFIX": "/l",
 		// "open" | "invite" | "closed". `invite` restricts sign-up to SIGNUP_ALLOWLIST.
 		"SIGNUP_MODE": "invite",
-		// Comma-separated emails or @domain suffixes allowed to sign up in invite mode.
+		// Comma-separated emails or @domain suffixes allowed to sign up in invite
+		// mode. Empty means nobody can register — set this before the first deploy.
+		// To keep your address out of a public repo, set it as a secret instead:
+		// `wrangler secret put SIGNUP_ALLOWLIST` (a secret overrides the var).
 		"SIGNUP_ALLOWLIST": ""
 	},
 

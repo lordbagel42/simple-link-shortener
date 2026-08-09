@@ -24,3 +24,5 @@ vite.config.ts.timestamp-*
 
 # Cloudflare
 .dev.vars
+# Throwaway config for `wrangler deploy --temporary`
+wrangler.temp.jsonc

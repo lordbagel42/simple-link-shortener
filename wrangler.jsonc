@@ -8,30 +8,59 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"assets": {
 		"binding": "ASSETS",
-		"directory": ".svelte-kit/cloudflare"
+		"directory": ".svelte-kit/cloudflare",
+		// Short links skip the static-asset lookup entirely: it saves a hop on the
+		// hot path, and no uploaded file can ever shadow a slug.
+		"run_worker_first": ["/l/*"]
 	},
 	"observability": {
-		"enabled": true
+		"logs": {
+			"enabled": true,
+			"invocation_logs": true
+		},
+		"traces": {
+			"enabled": true
+		}
 	},
 
-	// The short-link route and the dashboard are served by the same Worker.
+	// Smart Placement runs the Worker near D1 instead of near the visitor. That
+	// is the right trade for the dashboard, which makes several D1 round trips
+	// per page, and the wrong one for redirects, which only need an edge KV read.
+	// See "Smart Placement and redirect latency" in the README.
+	"placement": {
+		"mode": "smart"
+	},
+
+	// The dashboard and the short links are served by the same Worker.
 	// `hooks.server.ts` decides which one a request belongs to.
 	//
-	// Uncomment and edit once the zone exists in your account:
-	// "routes": [
-	//   { "pattern": "links.raygen.dev", "custom_domain": true },
-	//   { "pattern": "raygen.dev/l/*", "zone_name": "raygen.dev" }
-	// ],
+	// `raygen.dev/l/*` is deliberately a zone route scoped to one path, not a
+	// custom domain: a custom domain would claim the whole apex hostname and
+	// take traffic away from the Worker already running there. Cloudflare picks
+	// the most specific matching route, so an existing `raygen.dev/*` route keeps
+	// everything except `/l/*`.
+	"routes": [
+		{ "pattern": "links.raygen.dev", "custom_domain": true },
+		{ "pattern": "link.raygen.dev", "custom_domain": true },
+		{ "pattern": "raygen.dev/l/*", "zone_name": "raygen.dev" }
+	],
+
+	// Serve only on the routes above — no `*.workers.dev` URL.
+	"workers_dev": false,
+	"preview_urls": false,
 
 	"vars": {
 		// Public origin of the management dashboard.
 		"APP_URL": "https://links.raygen.dev",
-		// Origin short links are generated against.
+		// Origin short links are generated against. Switch to
+		// "https://link.raygen.dev" for shorter links — both resolve either way.
 		"SHORT_URL": "https://raygen.dev/l",
-		// Hostname that serves short links. Requests to this host never render the app.
-		"SHORT_HOST": "raygen.dev",
-		// Path prefix on SHORT_HOST that short links live under. Use "/" to serve
-		// short links from the root of the host instead.
+		// Comma-separated hosts dedicated to short links: every single-segment path
+		// is a slug there and nothing else is served. The apex is NOT listed — it
+		// only serves short links under SHORT_PREFIX, and the rest of raygen.dev
+		// belongs to another Worker.
+		"SHORT_HOSTS": "link.raygen.dev",
+		// Path prefix that serves short links on any host, including the apex.
 		"SHORT_PREFIX": "/l",
 		// "open" | "invite" | "closed". `invite` restricts sign-up to SIGNUP_ALLOWLIST.
 		"SIGNUP_MODE": "invite",

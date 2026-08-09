@@ -1,8 +1,9 @@
 # Links
 
 A self-hosted link shortener that runs entirely on Cloudflare: short links are
-served from a path on your main domain (`raygen.dev/l/*`) and managed from a
-dashboard on its own subdomain (`links.raygen.dev`).
+served from a path on your main domain (`raygen.dev/l/*`) and from a dedicated
+host (`link.raygen.dev/*`), and managed from a dashboard on its own subdomain
+(`links.raygen.dev`).
 
 - **Redirects are one KV read.** The hot path is handled in `hooks.server.ts`
   before SvelteKit routing, and analytics are written after the response is
@@ -20,12 +21,24 @@ and better-auth.
 | Request | Handled by |
 | --- | --- |
 | `raygen.dev/l/<slug>` | Redirect path — KV lookup, 302, click logged via `waitUntil` |
-| `raygen.dev/<anything else>` | 404 (the Worker route only covers `/l/*`) |
+| `link.raygen.dev/<slug>` | The same redirect path, at the root of a dedicated host |
+| `link.raygen.dev/l/<slug>` | Also works — the prefix is accepted everywhere |
+| `link.raygen.dev/<anything else>` | 404. The dashboard is never served here |
 | `links.raygen.dev/*` | The management dashboard and REST API |
+| `raygen.dev/<anything else>` | Not this Worker's route — left to whatever else runs on the zone |
 
-Both hostnames are the same Worker. `SHORT_HOST` / `SHORT_PREFIX` decide which
-requests are treated as short links, so you can serve slugs from the root of a
-dedicated domain instead by setting `SHORT_PREFIX` to `/`.
+All of these are one Worker, split by two settings:
+
+- **`SHORT_PREFIX`** (`/l`) matches `<prefix>/<slug>` on *any* host. That is what
+  makes `raygen.dev/l/abc` work without claiming the rest of the apex, and what
+  makes `localhost:5173/l/abc` behave identically in development.
+- **`SHORT_HOSTS`** (comma-separated) lists hosts given over entirely to short
+  links. On those, every single-segment path is a slug and nothing else is
+  served — which is why `link.raygen.dev` can be a bare `/<slug>` domain while
+  the apex cannot.
+
+The apex is deliberately **not** in `SHORT_HOSTS`: it only answers under the
+prefix, so the rest of `raygen.dev` stays untouched.
 
 ## Features
 
@@ -73,9 +86,9 @@ Edit the `vars` block in `wrangler.jsonc`:
 | Variable | Meaning |
 | --- | --- |
 | `APP_URL` | Public origin of the dashboard, e.g. `https://links.raygen.dev` |
-| `SHORT_URL` | Base short links are built on, e.g. `https://raygen.dev/l` |
-| `SHORT_HOST` | Hostname that serves short links and nothing else |
-| `SHORT_PREFIX` | Path prefix for slugs (`/l`, or `/` to use the host root) |
+| `SHORT_URL` | Base that generated links are built on, e.g. `https://raygen.dev/l` or `https://link.raygen.dev` |
+| `SHORT_HOSTS` | Comma-separated hosts that serve slugs at their root and nothing else |
+| `SHORT_PREFIX` | Path prefix that serves slugs on every host (`/l`) |
 | `SIGNUP_MODE` | `open`, `invite`, or `closed` |
 | `SIGNUP_ALLOWLIST` | Comma-separated emails or `@domain` suffixes for `invite` |
 
@@ -97,15 +110,30 @@ npm run db:migrate      # applies drizzle/ to the remote D1 database
 npm run deploy
 ```
 
-Finally, uncomment the `routes` block in `wrangler.jsonc` and point it at your
-zone:
+`wrangler.jsonc` already routes the Worker at your own hostnames, with
+`workers_dev` off so there is no `*.workers.dev` URL to find:
 
 ```jsonc
 "routes": [
   { "pattern": "links.raygen.dev", "custom_domain": true },
+  { "pattern": "link.raygen.dev", "custom_domain": true },
   { "pattern": "raygen.dev/l/*", "zone_name": "raygen.dev" }
 ]
 ```
+
+**This will not disturb another Worker already serving `raygen.dev`.** The apex
+entry is a zone route scoped to one path, not a custom domain — a custom domain
+would claim the entire hostname. Cloudflare dispatches to the most specific
+matching route, so an existing `raygen.dev/*` route keeps every path except
+`/l/*`. The two subdomains are custom domains, which is fine because nothing
+else answers on them.
+
+All three require `raygen.dev` to be an active zone **on the same Cloudflare
+account as the Worker** — custom domains cannot cross accounts. The two
+subdomain DNS records are created for you on first deploy. The `raygen.dev/l/*`
+route is a zone route, so it only fires if the apex already resolves through
+Cloudflare (an orange-clouded `A`/`AAAA`/`CNAME` record); since a Worker is
+already serving the apex, that record exists.
 
 ## Local development
 
@@ -155,6 +183,52 @@ curl -X POST https://links.raygen.dev/api/v1/links \
 | `PATCH` | `/api/v1/links/:id` | Update any subset of fields |
 | `DELETE` | `/api/v1/links/:id` | Delete the link and its click history |
 
+## Analytics Engine
+
+There is nothing to provision. The dataset is created the first time the Worker
+writes to it, so the `analytics_engine_datasets` binding in `wrangler.jsonc` is
+the entire setup:
+
+```jsonc
+"analytics_engine_datasets": [
+  { "binding": "CLICKS_AE", "dataset": "link_clicks" }
+]
+```
+
+`recordClick()` writes one data point per click, skipping the call entirely when
+the binding is absent. Each point carries one index (the link id) plus:
+
+| Field | Contents |
+| --- | --- |
+| `blob1`–`blob10` | slug, user id, country, city, device, OS, browser, referrer domain, colo, destination |
+| `double1` | always `1`, so `sum(double1)` counts clicks |
+| `double2` | `1` for bot traffic, `0` otherwise |
+| `double3` | ASN |
+
+Reading is a separate step, because querying is not part of the binding. Create
+an API token with the **Account Analytics Read** permission, then POST SQL to
+the account endpoint:
+
+```sh
+curl "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/analytics_engine/sql" \
+  -H "Authorization: Bearer $CF_ANALYTICS_TOKEN" \
+  --data "SELECT blob1 AS slug, blob3 AS country, sum(double1) AS clicks
+          FROM link_clicks
+          WHERE timestamp > NOW() - INTERVAL '7' DAY
+          GROUP BY slug, country
+          ORDER BY clicks DESC"
+```
+
+Worth knowing before you lean on it: **data is retained for three months**, a
+data point allows at most 20 blobs, 20 doubles, and 1 index, and sampling kicks
+in at high volume — `sum(_sample_interval)` rather than `count()` is the honest
+row count once that happens. The dashboard deliberately does not read from here;
+it queries D1, which keeps everything and needs no extra token.
+
+One thing I could not confirm from Cloudflare's docs: whether Analytics Engine
+requires a paid Workers plan. If `writeDataPoint` silently drops everything on a
+free account, that is the first thing to check.
+
 ## Design notes
 
 **KV is a cache, D1 is the truth.** Every write republishes the link's KV
@@ -180,6 +254,19 @@ personal data under GDPR and similar regimes — if you publish links to visitor
 in those jurisdictions, say so in your privacy notice and prune the `click`
 table on whatever retention schedule you have committed to.
 
+**Smart Placement and redirect latency.** `placement.mode` is `smart`, which
+lets Cloudflare run the Worker near D1 instead of near the visitor. That is
+clearly right for the dashboard, which makes several D1 round trips per page,
+and it cuts against the redirect path, which otherwise needs nothing but an
+edge-cached KV read. Placement is a per-Worker setting, so the two cannot be
+tuned separately in one deployment. If redirect latency from distant regions
+matters more than dashboard speed, drop the `placement` block; if you want
+both, split the redirect handler into its own Worker on `raygen.dev/l/*` and
+leave Smart Placement on the dashboard.
+
 **Analytics Engine is optional.** When the `CLICKS_AE` binding exists each click
-is also written there for cheap long-term retention. The dashboard always reads
-from D1; delete the `analytics_engine_datasets` block to turn it off.
+is mirrored there as well. D1 is the source of truth and the only thing the
+dashboard reads; Analytics Engine is for ad-hoc SQL over high-cardinality data
+that would be slow to aggregate in D1. Note that it keeps data for **three
+months**, so it is a query surface, not an archive — D1 is what retains history.
+Delete the `analytics_engine_datasets` block to turn it off.

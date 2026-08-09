@@ -3,7 +3,10 @@
 	"compilerOptions": {
 		"rewriteRelativeImportExtensions": true,
 		"allowJs": true,
-		"checkJs": true,
+		// Off on purpose: every source file here is TypeScript or Svelte, and the
+		// only .js in the tree is the adapter's emitted build output, which
+		// svelte-check would otherwise walk into and report errors from.
+		"checkJs": false,
 		"esModuleInterop": true,
 		"forceConsistentCasingInFileNames": true,
 		"resolveJsonModule": true,

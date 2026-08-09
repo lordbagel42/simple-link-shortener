@@ -12,7 +12,7 @@ export interface Env {
 
 	APP_URL?: string;
 	SHORT_URL?: string;
-	SHORT_HOST?: string;
+	SHORT_HOSTS?: string;
 	SHORT_PREFIX?: string;
 	SIGNUP_MODE?: string;
 	SIGNUP_ALLOWLIST?: string;
@@ -40,6 +40,18 @@ export function getEnv(event: Pick<RequestEvent, 'platform'>): Env {
 		);
 	}
 	return env;
+}
+
+/**
+ * Hostnames dedicated entirely to short links. On these, every single-segment
+ * path is a slug and nothing else is served — so they can be pointed at a
+ * Worker route without shadowing whatever else lives on the zone.
+ */
+export function shortHosts(env: Env): string[] {
+	return (env.SHORT_HOSTS ?? '')
+		.split(',')
+		.map((host) => host.trim().toLowerCase())
+		.filter(Boolean);
 }
 
 /** Normalised short-link prefix: always starts with `/`, never ends with one. */

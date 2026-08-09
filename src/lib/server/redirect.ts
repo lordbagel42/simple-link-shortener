@@ -2,7 +2,7 @@ import type { RequestEvent } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
 import { getDb } from './db';
 import { link as linkTable } from './db/schema';
-import { getEnv, shortPrefix, type Env, type WaitUntil } from './env';
+import { getEnv, shortHosts, shortPrefix, type Env, type WaitUntil } from './env';
 import { verifyPassword } from './crypto';
 import {
 	buildTargetUrl,
@@ -19,30 +19,32 @@ import { errorPage, passwordPage } from './pages';
 /**
  * Decides whether a request is a short-link hit, and if so which slug it wants.
  *
- * Short links live at `SHORT_PREFIX` on `SHORT_HOST` in production. The prefix
- * also works on any other host so `localhost:5173/l/abc` behaves identically in
- * development.
+ * Two shapes resolve to the same link:
+ *
+ * - `<SHORT_PREFIX>/<slug>` on any host — `raygen.dev/l/abc`, and the same path
+ *   on localhost during development.
+ * - `/<slug>` at the root of any host in `SHORT_HOSTS` — `link.raygen.dev/abc`.
  */
 export function matchShortLink(url: URL, env: Env): { slug: string } | null {
 	const prefix = shortPrefix(env);
 	const path = url.pathname;
 
-	if (prefix) {
-		if (!path.startsWith(`${prefix}/`)) return null;
+	if (prefix && path.startsWith(`${prefix}/`)) {
 		const slug = path.slice(prefix.length + 1);
 		return slug && !slug.includes('/') ? { slug } : null;
 	}
 
-	// Prefix-less mode: every single-segment path on the short host is a slug.
-	if (!isShortHost(url, env)) return null;
-	const slug = path.slice(1);
-	return slug && !slug.includes('/') ? { slug } : null;
+	if (isShortHost(url, env)) {
+		const slug = path.slice(1);
+		return slug && !slug.includes('/') ? { slug } : null;
+	}
+
+	return null;
 }
 
-/** True when the request arrived on the dedicated short-link hostname. */
+/** True when the request arrived on a hostname dedicated to short links. */
 export function isShortHost(url: URL, env: Env): boolean {
-	if (!env.SHORT_HOST) return false;
-	return url.hostname.toLowerCase() === env.SHORT_HOST.toLowerCase();
+	return shortHosts(env).includes(url.hostname.toLowerCase());
 }
 
 const NO_STORE = {

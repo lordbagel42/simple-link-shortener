@@ -87,12 +87,14 @@
 		}
 	],
 
-	// Optional: long-retention click analytics. Remove this block to disable —
-	// the dashboard reads from D1 either way.
+	// Optional: mirrors every click into Analytics Engine for ad-hoc SQL. It keeps
+	// three months of data, so it is a query surface rather than an archive — D1
+	// is the source of truth and the only thing the dashboard reads. Remove this
+	// block to disable. `dataset` is the table name you SELECT ... FROM.
 	"analytics_engine_datasets": [
 		{
 			"binding": "CLICKS_AE",
-			"dataset": "link_clicks"
+			"dataset": "CLICKS_AE"
 		}
 	]
 }

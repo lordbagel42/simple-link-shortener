@@ -187,11 +187,12 @@ curl -X POST https://links.raygen.dev/api/v1/links \
 
 There is nothing to provision. The dataset is created the first time the Worker
 writes to it, so the `analytics_engine_datasets` binding in `wrangler.jsonc` is
-the entire setup:
+the entire setup. `binding` is the name the Worker code uses; `dataset` is the
+table name you `SELECT ... FROM` — here they are deliberately the same:
 
 ```jsonc
 "analytics_engine_datasets": [
-  { "binding": "CLICKS_AE", "dataset": "link_clicks" }
+  { "binding": "CLICKS_AE", "dataset": "CLICKS_AE" }
 ]
 ```
 
@@ -213,7 +214,7 @@ the account endpoint:
 curl "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/analytics_engine/sql" \
   -H "Authorization: Bearer $CF_ANALYTICS_TOKEN" \
   --data "SELECT blob1 AS slug, blob3 AS country, sum(double1) AS clicks
-          FROM link_clicks
+          FROM CLICKS_AE
           WHERE timestamp > NOW() - INTERVAL '7' DAY
           GROUP BY slug, country
           ORDER BY clicks DESC"

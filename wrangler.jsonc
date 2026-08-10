@@ -8,10 +8,7 @@
 	"compatibility_flags": ["nodejs_compat"],
 	"assets": {
 		"binding": "ASSETS",
-		"directory": ".svelte-kit/cloudflare",
-		// Short links skip the static-asset lookup entirely: it saves a hop on the
-		// hot path, and no uploaded file can ever shadow a slug.
-		"run_worker_first": ["/l/*"]
+		"directory": ".svelte-kit/cloudflare"
 	},
 	"observability": {
 		"logs": {
@@ -31,18 +28,10 @@
 		"mode": "smart"
 	},
 
-	// The dashboard and the short links are served by the same Worker.
-	// `hooks.server.ts` decides which one a request belongs to.
-	//
-	// `raygen.dev/l/*` is deliberately a zone route scoped to one path, not a
-	// custom domain: a custom domain would claim the whole apex hostname and
-	// take traffic away from the Worker already running there. Cloudflare picks
-	// the most specific matching route, so an existing `raygen.dev/*` route keeps
-	// everything except `/l/*`.
+	// Only the dashboard. Short links belong to the separate, edge-placed Worker
+	// in `workers/redirect` — see "Two Workers" in the README.
 	"routes": [
-		{ "pattern": "links.raygen.dev", "custom_domain": true },
-		{ "pattern": "link.raygen.dev", "custom_domain": true },
-		{ "pattern": "raygen.dev/l/*", "zone_name": "raygen.dev" }
+		{ "pattern": "links.raygen.dev", "custom_domain": true }
 	],
 
 	// Serve only on the routes above — no `*.workers.dev` URL.
@@ -55,12 +44,11 @@
 		// Origin short links are generated against. Switch to
 		// "https://link.raygen.dev" for shorter links — both resolve either way.
 		"SHORT_URL": "https://raygen.dev/l",
-		// Comma-separated hosts dedicated to short links: every single-segment path
-		// is a slug there and nothing else is served. The apex is NOT listed — it
-		// only serves short links under SHORT_PREFIX, and the rest of raygen.dev
-		// belongs to another Worker.
-		"SHORT_HOSTS": "link.raygen.dev",
-		// Path prefix that serves short links on any host, including the apex.
+		// Empty: the dashboard host serves no root-level slugs. The redirect Worker
+		// owns link.raygen.dev and raygen.dev/l/*.
+		"SHORT_HOSTS": "",
+		// Kept so `localhost:5173/l/<slug>` still resolves in development, and so
+		// links.raygen.dev/l/<slug> works as a fallback.
 		"SHORT_PREFIX": "/l",
 		// "open" | "invite" | "closed". `invite` restricts sign-up to SIGNUP_ALLOWLIST.
 		"SIGNUP_MODE": "invite",

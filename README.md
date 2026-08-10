@@ -16,18 +16,47 @@ host (`link.raygen.dev/*`), and managed from a dashboard on its own subdomain
 Built with SvelteKit 2 + Svelte 5, Tailwind CSS 4, shadcn-svelte, Drizzle ORM,
 and better-auth.
 
+## Two Workers
+
+Redirects and the dashboard are deployed as **separate Workers**, because they
+want opposite things from Cloudflare.
+
+| | `links-redirect` | `links` |
+| --- | --- | --- |
+| Serves | `raygen.dev/l/*`, `link.raygen.dev/*` | `links.raygen.dev/*` |
+| Placement | **Edge** — nearest the visitor | **Smart** — nearest D1 |
+| Contains | KV read, redirect, deferred click write | SvelteKit, better-auth, the REST API |
+| Bundle | ~23 KiB (8 KiB gzip) | ~3.4 MiB (620 KiB gzip) |
+| Config | `workers/redirect/wrangler.jsonc` | `wrangler.jsonc` |
+
+The dashboard makes several D1 round trips per page, so Smart Placement is a
+clear win there. A redirect makes none on the response path — one edge-cached
+KV read, then a 302 — so Smart Placement would only add the distance from the
+visitor to D1's region. Placement is a per-Worker setting, so the only way to
+have both is to have two Workers.
+
+The redirect Worker also skips `nodejs_compat`, static assets, and every
+dependency the dashboard needs. It reaches D1 through raw prepared statements
+rather than Drizzle, which is what takes it from 203 KiB to 23 KiB — on a path
+whose entire job is speed, bundle size is isolate start-up time. Those
+statements live in `src/lib/server/d1.ts`; a migration that touches `link` or
+`click` needs a matching edit there.
+
+Both Workers import the same matching and resolution logic from
+`src/lib/server/redirect.ts`, so the two cannot drift.
+
 ## How requests are routed
 
 | Request | Handled by |
 | --- | --- |
-| `raygen.dev/l/<slug>` | Redirect path — KV lookup, 302, click logged via `waitUntil` |
-| `link.raygen.dev/<slug>` | The same redirect path, at the root of a dedicated host |
+| `raygen.dev/l/<slug>` | `links-redirect` — KV lookup, 302, click logged via `waitUntil` |
+| `link.raygen.dev/<slug>` | `links-redirect`, at the root of a dedicated host |
 | `link.raygen.dev/l/<slug>` | Also works — the prefix is accepted everywhere |
-| `link.raygen.dev/<anything else>` | 404. The dashboard is never served here |
-| `links.raygen.dev/*` | The management dashboard and REST API |
-| `raygen.dev/<anything else>` | Not this Worker's route — left to whatever else runs on the zone |
+| `link.raygen.dev/<anything else>` | 404, except `/` which bounces to the dashboard |
+| `links.raygen.dev/*` | `links` — the dashboard and REST API |
+| `raygen.dev/<anything else>` | Neither Worker's route — left to whatever else runs on the zone |
 
-All of these are one Worker, split by two settings:
+Matching is driven by two settings, shared by both Workers:
 
 - **`SHORT_PREFIX`** (`/l`) matches `<prefix>/<slug>` on *any* host. That is what
   makes `raygen.dev/l/abc` work without claiming the rest of the apex, and what
@@ -106,18 +135,28 @@ Social login is enabled automatically when the matching pair of secrets exists:
 ### 3. Migrate and deploy
 
 ```sh
-npm run db:migrate      # applies drizzle/ to the remote D1 database
-npm run deploy
+npm run db:migrate        # applies drizzle/ to the remote D1 database
+npm run deploy            # the dashboard Worker
+npm run deploy:redirect   # the redirect Worker
 ```
 
-`wrangler.jsonc` already routes the Worker at your own hostnames, with
-`workers_dev` off so there is no `*.workers.dev` URL to find:
+Both Workers must be deployed — they are separate scripts on Cloudflare, and a
+CI job pointed at the repository root only builds the dashboard. Point a second
+build at `workers/redirect/wrangler.jsonc`, or run `npm run deploy:redirect`
+by hand.
+
+`workers_dev` is off on both, so there is no `*.workers.dev` URL to find:
 
 ```jsonc
+// workers/redirect/wrangler.jsonc
 "routes": [
-  { "pattern": "links.raygen.dev", "custom_domain": true },
   { "pattern": "link.raygen.dev", "custom_domain": true },
   { "pattern": "raygen.dev/l/*", "zone_name": "raygen.dev" }
+]
+
+// wrangler.jsonc
+"routes": [
+  { "pattern": "links.raygen.dev", "custom_domain": true }
 ]
 ```
 
@@ -125,8 +164,8 @@ npm run deploy
 entry is a zone route scoped to one path, not a custom domain — a custom domain
 would claim the entire hostname. Cloudflare dispatches to the most specific
 matching route, so an existing `raygen.dev/*` route keeps every path except
-`/l/*`. The two subdomains are custom domains, which is fine because nothing
-else answers on them.
+`/l/*`. The subdomains are custom domains, which is fine because nothing else
+answers on them.
 
 All three require `raygen.dev` to be an active zone **on the same Cloudflare
 account as the Worker** — custom domains cannot cross accounts. The two
@@ -145,7 +184,12 @@ npm run dev
 
 Vite emulates D1, KV, and Analytics Engine from `wrangler.jsonc`, so the
 dashboard runs at `http://localhost:5173` and short links resolve at
-`http://localhost:5173/l/<slug>`.
+`http://localhost:5173/l/<slug>` — the dashboard keeps the same matching logic,
+so you rarely need both processes. To exercise the real redirect Worker:
+
+```sh
+npm run dev:redirect   # wrangler dev on port 5174, same local D1 and KV
+```
 
 Useful scripts:
 
@@ -154,6 +198,8 @@ Useful scripts:
 | `npm run check` | Typecheck the whole project |
 | `npm run db:generate` | Regenerate migrations after editing the schema |
 | `npm run cf-typegen` | Regenerate binding types after editing `wrangler.jsonc` |
+| `npm run dev:redirect` | Run the redirect Worker against the same local D1 and KV |
+| `npm run deploy:redirect` | Deploy the redirect Worker |
 
 ## API
 
@@ -254,16 +300,6 @@ reason.
 personal data under GDPR and similar regimes — if you publish links to visitors
 in those jurisdictions, say so in your privacy notice and prune the `click`
 table on whatever retention schedule you have committed to.
-
-**Smart Placement and redirect latency.** `placement.mode` is `smart`, which
-lets Cloudflare run the Worker near D1 instead of near the visitor. That is
-clearly right for the dashboard, which makes several D1 round trips per page,
-and it cuts against the redirect path, which otherwise needs nothing but an
-edge-cached KV read. Placement is a per-Worker setting, so the two cannot be
-tuned separately in one deployment. If redirect latency from distant regions
-matters more than dashboard speed, drop the `placement` block; if you want
-both, split the redirect handler into its own Worker on `raygen.dev/l/*` and
-leave Smart Placement on the dashboard.
 
 **Analytics Engine is optional.** When the `CLICKS_AE` binding exists each click
 is mirrored there as well. D1 is the source of truth and the only thing the

@@ -1,16 +1,13 @@
 import type { RequestEvent } from '@sveltejs/kit';
-import { eq } from 'drizzle-orm';
-import { getDb } from './db';
-import { link as linkTable } from './db/schema';
+import { findLinkBySlug } from './d1';
 import { getEnv, shortHosts, shortPrefix, type Env, type WaitUntil } from './env';
 import { verifyPassword } from './crypto';
 import {
 	buildTargetUrl,
 	linkState,
 	readLinkRecord,
+	putLinkRecord,
 	selectDestination,
-	toLinkRecord,
-	writeLinkRecord,
 	type LinkRecord
 } from './link-record';
 import { recordClick, snapshotVisitor } from './clicks';
@@ -47,34 +44,64 @@ export function isShortHost(url: URL, env: Env): boolean {
 	return shortHosts(env).includes(url.hostname.toLowerCase());
 }
 
+/** The 404 page, shared by the redirect Worker and the SvelteKit hook. */
+export function notFoundResponse(): Response {
+	return new Response(
+		errorPage({
+			title: 'Link not found',
+			message: 'This short link does not exist, or it has been deleted.',
+			code: 404
+		}),
+		{ status: 404, headers: { 'content-type': 'text/html; charset=utf-8', ...NO_STORE } }
+	);
+}
+
 const NO_STORE = {
 	'cache-control': 'private, no-store, max-age=0',
 	'referrer-policy': 'unsafe-url'
 };
 
+/** Everything the hot path needs, with no framework types involved. */
+export type RedirectContext = {
+	request: Request;
+	url: URL;
+	env: Env;
+	/** Cloudflare's execution context, for deferring the click write. */
+	ctx?: WaitUntil;
+	/** `request.cf` — geo and network metadata. */
+	cf?: Record<string, unknown>;
+};
+
+/**
+ * SvelteKit adapter for `resolveShortLink`. Only used in development and on the
+ * dashboard host; production short links are served by the dedicated redirect
+ * Worker in `workers/redirect`.
+ */
+export function handleShortLink(event: RequestEvent, slug: string): Promise<Response> {
+	return resolveShortLink(slug, {
+		request: event.request,
+		url: event.url,
+		env: getEnv(event),
+		ctx: event.platform?.ctx,
+		cf: event.platform?.cf as Record<string, unknown> | undefined
+	});
+}
+
 /**
  * The hot path. One KV read, then a redirect. Analytics are written after the
  * response has been handed back to the client.
  */
-export async function handleShortLink(event: RequestEvent, slug: string): Promise<Response> {
-	const env = getEnv(event);
-	const { url, request, platform } = event;
+export async function resolveShortLink(slug: string, c: RedirectContext): Promise<Response> {
+	const { request, url, env, ctx } = c;
 
 	let record = await readLinkRecord(env, slug);
 
 	// KV misses are self-healing: fall back to D1 and repopulate the cache. This
 	// covers cold caches, evictions, and links created before the KV write.
 	if (!record) {
-		record = await hydrateFromDatabase(env, slug, platform?.ctx);
+		record = await hydrateFromDatabase(env, slug, ctx);
 		if (!record) {
-			return new Response(
-				errorPage({
-					title: 'Link not found',
-					message: 'This short link does not exist, or it has been deleted.',
-					code: 404
-				}),
-				{ status: 404, headers: { 'content-type': 'text/html; charset=utf-8', ...NO_STORE } }
-			);
+			return notFoundResponse();
 		}
 	}
 
@@ -82,11 +109,11 @@ export async function handleShortLink(event: RequestEvent, slug: string): Promis
 	if (state !== 'ok') return unavailable(record, state);
 
 	if (record.passwordHash) {
-		const unlocked = await checkPassword(event, record);
+		const unlocked = await checkPassword(request, url, record);
 		if (unlocked !== true) return unlocked;
 	}
 
-	const visitor = snapshotVisitor(request, url, platform?.cf as Record<string, unknown> | undefined);
+	const visitor = snapshotVisitor(request, url, c.cf);
 	const destination = selectDestination(record, {
 		country: visitor.country,
 		continent: visitor.continent,
@@ -97,7 +124,7 @@ export async function handleShortLink(event: RequestEvent, slug: string): Promis
 	});
 	const target = buildTargetUrl(record, destination, url);
 
-	platform?.ctx?.waitUntil(
+	ctx?.waitUntil(
 		recordClick(env, record, visitor, target).catch((error) => {
 			console.error('failed to record click', error);
 		})
@@ -115,12 +142,11 @@ async function hydrateFromDatabase(
 	slug: string,
 	ctx: WaitUntil | undefined
 ): Promise<LinkRecord | null> {
-	const db = getDb(env);
-	const [row] = await db.select().from(linkTable).where(eq(linkTable.slug, slug)).limit(1);
-	if (!row) return null;
+	const record = await findLinkBySlug(env, slug);
+	if (!record) return null;
 
-	ctx?.waitUntil(writeLinkRecord(env, row).catch(() => {}));
-	return toLinkRecord(row);
+	ctx?.waitUntil(putLinkRecord(env, record).catch(() => {}));
+	return record;
 }
 
 function unavailable(record: LinkRecord, state: 'disabled' | 'expired'): Response {
@@ -141,8 +167,11 @@ function unavailable(record: LinkRecord, state: 'disabled' | 'expired'): Respons
  * Password-protected links. Returns `true` once the visitor is through, or the
  * response to send them instead (the form, or the form with an error).
  */
-async function checkPassword(event: RequestEvent, record: LinkRecord): Promise<true | Response> {
-	const { request, url } = event;
+async function checkPassword(
+	request: Request,
+	url: URL,
+	record: LinkRecord
+): Promise<true | Response> {
 	const html = (error?: string) =>
 		new Response(passwordPage({ action: url.pathname + url.search, error }), {
 			status: error ? 401 : 200,

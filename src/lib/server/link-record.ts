@@ -64,14 +64,18 @@ export async function readLinkRecord(env: Env, slug: string): Promise<LinkRecord
 }
 
 export async function writeLinkRecord(env: Env, link: Link): Promise<void> {
-	const record = toLinkRecord(link);
+	await putLinkRecord(env, toLinkRecord(link));
+}
+
+/** Publish a record straight to KV, without needing a database row to build it. */
+export async function putLinkRecord(env: Env, record: LinkRecord): Promise<void> {
 	// Let KV expire the key on its own once the link does; a stale record can
 	// then never outlive the link it describes.
 	const expirationTtl = record.expiresAt
 		? Math.max(60, Math.ceil((record.expiresAt - Date.now()) / 1000) + 60)
 		: undefined;
 
-	await env.LINKS.put(linkKey(link.slug), JSON.stringify(record), { expirationTtl });
+	await env.LINKS.put(linkKey(record.slug), JSON.stringify(record), { expirationTtl });
 }
 
 export async function deleteLinkRecord(env: Env, slug: string): Promise<void> {

@@ -1,10 +1,8 @@
-import { eq, sql, and } from 'drizzle-orm';
-import { getDb } from './db';
-import { click, link as linkTable } from './db/schema';
 import type { Env } from './env';
 import { newId, sha256Hex } from './crypto';
 import { parseUserAgent, refererDomain, type ParsedUserAgent } from './user-agent';
-import { writeLinkRecord, type LinkRecord } from './link-record';
+import { putLinkRecord, type LinkRecord } from './link-record';
+import { disableLink, hasSeenVisitor, writeClick } from './d1';
 
 /** Everything we can learn about a visitor before the redirect is issued. */
 export type VisitorSnapshot = {
@@ -102,84 +100,29 @@ export async function recordClick(
 	visitor: VisitorSnapshot,
 	destination: string
 ): Promise<void> {
-	const db = getDb(env);
-	const now = new Date();
+	const now = Date.now();
 
 	const visitorHash = await hashVisitor(env, record.id, visitor);
 	const isNewVisitor = visitorHash ? !(await hasSeenVisitor(env, record.id, visitorHash)) : true;
 
-	await db.insert(click).values({
-		id: newId(),
-		linkId: record.id,
-		userId: record.userId,
-		timestamp: now,
+	const clickCount = await writeClick(
+		env,
+		record,
+		visitor,
 		destination,
-		ip: visitor.ip,
+		newId(),
 		visitorHash,
 		isNewVisitor,
-
-		country: visitor.country,
-		region: visitor.region,
-		regionCode: visitor.regionCode,
-		city: visitor.city,
-		postalCode: visitor.postalCode,
-		continent: visitor.continent,
-		latitude: visitor.latitude,
-		longitude: visitor.longitude,
-		timezone: visitor.timezone,
-		isEuCountry: visitor.isEuCountry,
-
-		colo: visitor.colo,
-		asn: visitor.asn,
-		asOrganization: visitor.asOrganization,
-		httpProtocol: visitor.httpProtocol,
-		tlsVersion: visitor.tlsVersion,
-		tlsCipher: visitor.tlsCipher,
-		clientTcpRtt: visitor.clientTcpRtt,
-		verifiedBotCategory: visitor.verifiedBotCategory,
-		botScore: visitor.botScore,
-
-		userAgent: visitor.userAgent,
-		browser: visitor.ua.browser,
-		browserVersion: visitor.ua.browserVersion,
-		os: visitor.ua.os,
-		osVersion: visitor.ua.osVersion,
-		deviceType: visitor.ua.deviceType,
-		deviceVendor: visitor.ua.deviceVendor,
-		isBot: visitor.ua.isBot,
-		language: visitor.language,
-
-		referer: visitor.referer,
-		refererDomain: visitor.refererDomain,
-		utmSource: record.utm.source,
-		utmMedium: record.utm.medium,
-		utmCampaign: record.utm.campaign,
-		utmTerm: record.utm.term,
-		utmContent: record.utm.content,
-		queryString: visitor.queryString
-	});
-
-	const [updated] = await db
-		.update(linkTable)
-		.set({
-			clickCount: sql`${linkTable.clickCount} + 1`,
-			uniqueCount: isNewVisitor ? sql`${linkTable.uniqueCount} + 1` : sql`${linkTable.uniqueCount}`,
-			lastClickedAt: now
-		})
-		.where(eq(linkTable.id, record.id))
-		.returning();
+		now
+	);
 
 	writeAnalyticsEngine(env, record, visitor, destination);
 
 	// Click caps are enforced against the authoritative counter, then pushed back
 	// into KV. A handful of clicks can slip through while KV catches up.
-	if (updated && record.maxClicks !== null && updated.clickCount >= record.maxClicks) {
-		const [disabled] = await db
-			.update(linkTable)
-			.set({ enabled: false, updatedAt: new Date() })
-			.where(eq(linkTable.id, record.id))
-			.returning();
-		if (disabled) await writeLinkRecord(env, disabled);
+	if (clickCount !== null && record.maxClicks !== null && clickCount >= record.maxClicks) {
+		await disableLink(env, record.id, now);
+		await putLinkRecord(env, { ...record, enabled: false });
 	}
 }
 
@@ -194,16 +137,6 @@ async function hashVisitor(
 	const salt = env.VISITOR_HASH_SALT ?? env.BETTER_AUTH_SECRET ?? 'link-shortener';
 	const hash = await sha256Hex(`${salt}:${linkId}:${visitor.ip}:${visitor.userAgent ?? ''}`);
 	return hash.slice(0, 32);
-}
-
-async function hasSeenVisitor(env: Env, linkId: string, visitorHash: string): Promise<boolean> {
-	const db = getDb(env);
-	const rows = await db
-		.select({ id: click.id })
-		.from(click)
-		.where(and(eq(click.linkId, linkId), eq(click.visitorHash, visitorHash)))
-		.limit(1);
-	return rows.length > 0;
 }
 
 /**

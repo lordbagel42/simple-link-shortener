@@ -56,14 +56,23 @@ Because the D1 statements are shared, a migration that touches `link` or
 `click` needs a matching edit in `packages/links-core/src/d1.ts` and a new
 release of the package.
 
+Releases go out from `.github/workflows/release-core.yml`, which publishes on a
+matching tag using the workflow's built-in `GITHUB_TOKEN` — no personal access
+token needed to release:
+
 ```bash
-npm run build -w @lordbagel42/links-core   # compile it
-npm publish -w @lordbagel42/links-core     # release (needs write:packages)
+npm version patch -w @lordbagel42/links-core --no-git-tag-version
+git commit -am "release: links-core v0.1.1"
+git tag links-core-v0.1.1 && git push --follow-tags
 ```
 
-Consumers — including Cloudflare Workers Builds — need a `.npmrc` pointing
-`@lordbagel42` at `npm.pkg.github.com` and a token with `read:packages`.
-GitHub Packages has no anonymous access, even for public packages.
+Consumers do need a token. GitHub Packages has no anonymous read, even for
+public packages, so anything installing this — the
+[`links-agent`](https://github.com/lordbagel42/links-agent) repository and its
+Workers Builds job — needs `read:packages` exposed as `NODE_AUTH_TOKEN`.
+
+This repository is not one of them: it resolves the package through the npm
+workspace, so its own CI needs no registry credentials.
 
 ## How requests are routed
 

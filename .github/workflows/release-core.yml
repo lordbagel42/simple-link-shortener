@@ -1,0 +1,63 @@
+name: Release links-core
+
+# Publishes @lordbagel42/links-core to GitHub Packages.
+#
+# Uses the workflow's built-in GITHUB_TOKEN, so releasing needs no personal
+# access token. Consumers still need one: GitHub Packages has no anonymous
+# read, even for public packages, so anything that installs this — notably the
+# links-agent repository and its Cloudflare Workers Builds job — needs a token
+# with `read:packages` exposed as NODE_AUTH_TOKEN.
+#
+# Release by pushing a tag that matches the package version:
+#
+#     npm version patch -w @lordbagel42/links-core --no-git-tag-version
+#     git commit -am "release: links-core v0.1.1"
+#     git tag links-core-v0.1.1 && git push --follow-tags
+#
+# `workflow_dispatch` republishes the current version, which is only useful if
+# a previous run failed part-way — npm will reject a version that already exists.
+
+on:
+  push:
+    tags:
+      - 'links-core-v*'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://npm.pkg.github.com
+          scope: '@lordbagel42'
+
+      - name: Install
+        run: npm ci
+
+      - name: Verify the tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag_version="${GITHUB_REF_NAME#links-core-v}"
+          pkg_version="$(node -p "require('./packages/links-core/package.json').version")"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "Tag $GITHUB_REF_NAME implies $tag_version, but package.json says $pkg_version." >&2
+            exit 1
+          fi
+
+      # `prepublishOnly` compiles the package, but building here too means a
+      # type error fails the run before anything is published.
+      - name: Build
+        run: npm run build -w @lordbagel42/links-core
+
+      - name: Publish
+        run: npm publish -w @lordbagel42/links-core
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

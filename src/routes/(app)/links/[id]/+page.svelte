@@ -1,15 +1,20 @@
 <script lang="ts">
 	import { enhance } from '$app/forms';
 	import {
+		Archive,
+		ArchiveRestore,
 		ArrowLeft,
+		Clock,
 		ExternalLink,
+		EyeOff,
+		Gauge,
+		Lock,
 		Pencil,
 		QrCode,
-		Trash2,
-		Lock,
-		Clock,
-		Gauge,
-		Target
+		Smartphone,
+		SplitSquareHorizontal,
+		Target,
+		Trash2
 	} from '@lucide/svelte';
 	import { Button, buttonVariants } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
@@ -27,32 +32,56 @@
 	let qrOpen = $state(false);
 	let confirmingDelete = $state(false);
 
-	const shortUrl = $derived(`${data.shortBase}/${data.link.slug}`);
-	const expired = $derived(data.link.expiresAt !== null && data.link.expiresAt <= Date.now());
+	const link = $derived(data.link);
+	const expired = $derived(link.expiresAt !== null && link.expiresAt <= Date.now());
 
 	const facts = $derived(
 		[
-			data.link.expiresAt && {
+			link.expiresAt && {
 				icon: Clock,
 				label: expired ? 'Expired' : 'Expires',
-				value: formatDateTime(data.link.expiresAt)
+				value: formatDateTime(link.expiresAt)
 			},
-			data.link.maxClicks && {
+			link.maxClicks && {
 				icon: Gauge,
 				label: 'Click limit',
-				value: `${formatNumber(data.link.clickCount)} / ${formatNumber(data.link.maxClicks)}`
+				value: `${formatNumber(link.clickCount)} / ${formatNumber(link.maxClicks)}`
 			},
-			data.link.hasPassword && { icon: Lock, label: 'Password', value: 'Protected' },
-			data.link.rules.length > 0 && {
+			link.hasPassword && { icon: Lock, label: 'Password', value: 'Protected' },
+			link.rules.length > 0 && {
 				icon: Target,
 				label: 'Targeting',
-				value: `${data.link.rules.length} rule${data.link.rules.length === 1 ? '' : 's'}`
+				value: `${link.rules.length} rule${link.rules.length === 1 ? '' : 's'}`
+			},
+			link.variants.length > 0 && {
+				icon: SplitSquareHorizontal,
+				label: 'Split test',
+				value: `${link.variants.length} arms`
+			},
+			link.deepLink && {
+				icon: Smartphone,
+				label: 'Deep links',
+				value: [link.deepLink.iosUrl && 'iOS', link.deepLink.androidUrl && 'Android']
+					.filter(Boolean)
+					.join(' · ')
+			},
+			(link.cloak?.enabled || link.hideReferrer) && {
+				icon: EyeOff,
+				label: 'Privacy',
+				value: [link.cloak?.enabled && 'Cloaked', link.hideReferrer && 'Referrer hidden']
+					.filter(Boolean)
+					.join(' · ')
+			},
+			link.trackConversions && {
+				icon: Target,
+				label: 'Conversions',
+				value: `${formatNumber(link.conversionCount)} recorded`
 			}
 		].filter(Boolean) as { icon: typeof Clock; label: string; value: string }[]
 	);
 </script>
 
-<svelte:head><title>/{data.link.slug} · Links</title></svelte:head>
+<svelte:head><title>/{link.slug} · Links</title></svelte:head>
 
 <div class="flex flex-col gap-6">
 	<div>
@@ -68,10 +97,12 @@
 			<div class="min-w-0">
 				<div class="flex items-center gap-2">
 					<h1 class="truncate font-mono text-lg font-semibold tracking-tight">
-						{data.shortBase.replace(/^https?:\/\//, '')}/{data.link.slug}
+						{link.shortUrl.replace(/^https?:\/\//, '')}
 					</h1>
-					<CopyButton value={shortUrl} label="Copy short link" variant="outline" />
-					{#if !data.link.enabled}
+					<CopyButton value={link.shortUrl} label="Copy short link" variant="outline" />
+					{#if link.archived}
+						<Badge variant="secondary">Archived</Badge>
+					{:else if !link.enabled}
 						<Badge variant="secondary">Disabled</Badge>
 					{:else if expired}
 						<Badge variant="secondary">Expired</Badge>
@@ -81,18 +112,18 @@
 				</div>
 
 				<a
-					href={data.link.destination}
+					href={link.destination}
 					target="_blank"
 					rel="noreferrer noopener"
 					class="text-muted-foreground hover:text-foreground mt-1.5 inline-flex items-center gap-1.5 text-sm"
 				>
-					{data.link.title ? `${data.link.title} · ` : ''}{prettyUrl(data.link.destination, 72)}
+					{link.title ? `${link.title} · ` : ''}{prettyUrl(link.destination, 72)}
 					<ExternalLink class="size-3.5" />
 				</a>
 
-				{#if data.link.tags.length > 0}
+				{#if link.tags.length > 0}
 					<div class="mt-2 flex flex-wrap gap-1">
-						{#each data.link.tags as tag (tag)}
+						{#each link.tags as tag (tag)}
 							<Badge variant="outline" class="h-5 text-[11px] font-normal">{tag}</Badge>
 						{/each}
 					</div>
@@ -106,9 +137,22 @@
 				</Button>
 
 				<form method="POST" action="?/toggle" use:enhance>
-					<input type="hidden" name="enabled" value={String(!data.link.enabled)} />
+					<input type="hidden" name="enabled" value={String(!link.enabled)} />
 					<Button type="submit" variant="outline" size="sm">
-						{data.link.enabled ? 'Disable' : 'Enable'}
+						{link.enabled ? 'Disable' : 'Enable'}
+					</Button>
+				</form>
+
+				<form method="POST" action="?/archive" use:enhance>
+					<input type="hidden" name="archived" value={String(!link.archived)} />
+					<Button type="submit" variant="outline" size="sm">
+						{#if link.archived}
+							<ArchiveRestore class="size-4" />
+							Restore
+						{:else}
+							<Archive class="size-4" />
+							Archive
+						{/if}
 					</Button>
 				</form>
 
@@ -129,7 +173,7 @@
 			</div>
 		</div>
 
-		{#if facts.length > 0 || data.link.description}
+		{#if facts.length > 0 || link.description}
 			<div class="border-border bg-card mt-4 rounded-xl border px-4 py-3">
 				<div class="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
 					{#each facts as fact (fact.label)}
@@ -140,27 +184,33 @@
 						</span>
 					{/each}
 				</div>
-				{#if data.link.description}
+				{#if link.description}
 					{#if facts.length > 0}<Separator class="my-3" />{/if}
-					<p class="text-muted-foreground text-sm">{data.link.description}</p>
+					<p class="text-muted-foreground text-sm">{link.description}</p>
 				{/if}
 			</div>
 		{/if}
 	</div>
 
-	<AnalyticsView analytics={data.analytics} recent={data.recent} range={data.range} />
+	<AnalyticsView
+		analytics={data.analytics}
+		recent={data.recent}
+		conversions={data.conversions}
+		bots={data.scope.bots}
+	/>
 </div>
 
-<LinkDialog bind:open={editOpen} link={data.link} shortBase={data.shortBase} />
-<QrDialog bind:open={qrOpen} url={shortUrl} slug={data.link.slug} />
+<LinkDialog bind:open={editOpen} {link} domains={data.domains} folders={data.folders} />
+<QrDialog bind:open={qrOpen} {link} saveAction="?/update" />
 
 <AlertDialog.Root bind:open={confirmingDelete}>
 	<AlertDialog.Content>
 		<AlertDialog.Header>
-			<AlertDialog.Title>Delete /{data.link.slug}?</AlertDialog.Title>
+			<AlertDialog.Title>Delete /{link.slug}?</AlertDialog.Title>
 			<AlertDialog.Description>
 				The short link stops working immediately and its
-				{formatNumber(data.link.clickCount)} recorded clicks are deleted. This cannot be undone.
+				{formatNumber(link.clickCount)} recorded clicks are deleted. This cannot be undone —
+				archive it instead if you only want it out of the way.
 			</AlertDialog.Description>
 		</AlertDialog.Header>
 		<AlertDialog.Footer>

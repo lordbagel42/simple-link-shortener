@@ -47,14 +47,24 @@ export function formatDateTime(value: Date | number | string | null | undefined)
 }
 
 const dateOnly = new Intl.DateTimeFormat('en', { month: 'short', day: 'numeric' });
+const hourOnly = new Intl.DateTimeFormat('en', { hour: 'numeric' });
+const monthOnly = new Intl.DateTimeFormat('en', { month: 'short', year: 'numeric' });
 
-/** `2026-08-09` or `2026-08-09T14:00` → `Aug 9` / `2 PM` */
+/**
+ * A bucket key from the analytics query, as a label.
+ *
+ * The four widths are unambiguous: `2026-08` is a month, `2026-08-09` a day or
+ * the Monday of a week, and `2026-08-09T14:00` an hour.
+ */
 export function formatBucket(bucket: string): string {
+	if (bucket.length === 7) {
+		const month = new Date(`${bucket}-01T00:00:00Z`);
+		return Number.isNaN(month.getTime()) ? bucket : monthOnly.format(month);
+	}
+
 	const date = new Date(bucket.length > 10 ? `${bucket}:00Z` : `${bucket}T00:00:00Z`);
 	if (Number.isNaN(date.getTime())) return bucket;
-	return bucket.length > 10
-		? new Intl.DateTimeFormat('en', { hour: 'numeric' }).format(date)
-		: dateOnly.format(date);
+	return bucket.length > 10 ? hourOnly.format(date) : dateOnly.format(date);
 }
 
 /** `https://example.com/a/very/long/path?x=1` → `example.com/a/very/long/…` */

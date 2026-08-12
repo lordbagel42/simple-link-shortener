@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { Bot } from '@lucide/svelte';
+	import { Bot, QrCode } from '@lucide/svelte';
 	import { Badge } from '$lib/components/ui/badge';
 	import { countryFlag, formatDateTime, prettyUrl, timeAgo } from '$lib/format';
 	import type { RecentClick } from '$lib/types';
@@ -8,6 +8,18 @@
 
 	function place(click: RecentClick): string {
 		return [click.city, click.region, click.country].filter(Boolean).join(', ') || 'Unknown';
+	}
+
+	/** Everything the edge decided about this one request, on one line. */
+	function decision(click: RecentClick): string {
+		return [
+			click.variant ? `arm ${click.variant}` : null,
+			click.ruleMatched,
+			click.responseStatus ? String(click.responseStatus) : null,
+			click.processingMs === null ? null : `${click.processingMs}ms`
+		]
+			.filter(Boolean)
+			.join(' · ');
 	}
 </script>
 
@@ -29,12 +41,15 @@
 						<div class="flex flex-wrap items-center gap-x-2 gap-y-0.5">
 							{#if showSlug}
 								<a href="/links/{click.linkId}" class="font-mono text-xs hover:underline">
-									/{click.slug}
+									/{click.slug ?? '—'}
 								</a>
 							{/if}
 							<span class="truncate">{place(click)}</span>
 							{#if click.isNewVisitor}
 								<Badge variant="outline" class="h-4 px-1.5 text-[10px] font-normal">new</Badge>
+							{/if}
+							{#if click.isQr}
+								<QrCode class="text-muted-foreground size-3.5" aria-label="QR scan" />
 							{/if}
 							{#if click.isBot}
 								<Bot class="text-muted-foreground size-3.5" aria-label="Bot" />
@@ -57,6 +72,10 @@
 						<p class="text-muted-foreground/70 text-[11px]" title={formatDateTime(click.timestamp)}>
 							{timeAgo(click.timestamp)} · {prettyUrl(click.destination, 24)}
 						</p>
+					</div>
+
+					<div class="text-muted-foreground/70 hidden w-40 shrink-0 truncate text-right text-[11px] lg:block">
+						{decision(click)}
 					</div>
 				</div>
 			{/each}

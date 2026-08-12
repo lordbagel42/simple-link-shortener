@@ -7,10 +7,15 @@
 export type ParsedUserAgent = {
 	browser: string | null;
 	browserVersion: string | null;
+	/** Rendering engine — Blink, Gecko, WebKit, Trident. */
+	engine: string | null;
+	engineVersion: string | null;
 	os: string | null;
 	osVersion: string | null;
 	deviceType: 'desktop' | 'mobile' | 'tablet' | 'bot' | 'other';
 	deviceVendor: string | null;
+	/** Model token when the UA carries one, e.g. `SM-G991B`, `Pixel 7`. */
+	deviceModel: string | null;
 	isBot: boolean;
 };
 
@@ -59,14 +64,32 @@ const VENDORS: Matcher[] = [
 	{ name: 'OnePlus', re: /(ONEPLUS)/i }
 ];
 
+// Checked after browsers, because Blink and WebKit share most of their tokens.
+const ENGINES: Matcher[] = [
+	{ name: 'Blink', re: /Chrom(?:e|ium)\/([\d.]+)/ },
+	{ name: 'Gecko', re: /rv:([\d.]+).*Gecko\/\d/ },
+	{ name: 'WebKit', re: /AppleWebKit\/([\d.]+)/ },
+	{ name: 'Trident', re: /Trident\/([\d.]+)/ }
+];
+
+/** `Build/` and the iOS device tokens are where a model name actually appears. */
+const MODEL_RES: RegExp[] = [
+	/;\s*([A-Za-z0-9][\w .+-]*?)\s+Build\//,
+	/\((iPhone|iPad|iPod)[;)]/,
+	/;\s*(Pixel[\w ]*)\s*[;)]/
+];
+
 export function parseUserAgent(ua: string | null | undefined): ParsedUserAgent {
 	const empty: ParsedUserAgent = {
 		browser: null,
 		browserVersion: null,
+		engine: null,
+		engineVersion: null,
 		os: null,
 		osVersion: null,
 		deviceType: 'other',
 		deviceVendor: null,
+		deviceModel: null,
 		isBot: false
 	};
 	if (!ua) return empty;
@@ -99,6 +122,17 @@ export function parseUserAgent(ua: string | null | undefined): ParsedUserAgent {
 		}
 	}
 
+	let engine: string | null = null;
+	let engineVersion: string | null = null;
+	for (const { name, re } of ENGINES) {
+		const match = re.exec(ua);
+		if (match) {
+			engine = name;
+			engineVersion = match[1] ?? null;
+			break;
+		}
+	}
+
 	let deviceVendor: string | null = null;
 	for (const { name, re } of VENDORS) {
 		if (re.test(ua)) {
@@ -107,13 +141,25 @@ export function parseUserAgent(ua: string | null | undefined): ParsedUserAgent {
 		}
 	}
 
+	let deviceModel: string | null = null;
+	for (const re of MODEL_RES) {
+		const match = re.exec(ua);
+		if (match?.[1]) {
+			deviceModel = match[1].trim();
+			break;
+		}
+	}
+
 	return {
 		browser,
 		browserVersion,
+		engine,
+		engineVersion,
 		os,
 		osVersion,
 		deviceType: detectDeviceType(ua),
 		deviceVendor,
+		deviceModel,
 		isBot: false
 	};
 }

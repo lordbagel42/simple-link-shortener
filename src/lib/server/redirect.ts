@@ -7,7 +7,7 @@
  * `links.raygen.dev/l/*` fallback — production short links never reach here.
  */
 import type { RequestEvent } from '@sveltejs/kit';
-import { resolveShortLink } from '@lordbagel42/links-core';
+import { normalizeHost, resolveShortLink } from '@lordbagel42/links-core';
 import { getEnv } from './env';
 
 export type { RedirectContext } from '@lordbagel42/links-core';
@@ -15,11 +15,12 @@ export {
 	matchShortLink,
 	isShortHost,
 	notFoundResponse,
+	resolveRequest,
 	resolveShortLink
 } from '@lordbagel42/links-core';
 
 export function handleShortLink(event: RequestEvent, slug: string): Promise<Response> {
-	return resolveShortLink(slug, {
+	return resolveShortLink(normalizeHost(event.url.hostname), slug, {
 		request: event.request,
 		url: event.url,
 		env: getEnv(event),

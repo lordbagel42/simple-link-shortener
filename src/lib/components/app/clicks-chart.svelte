@@ -10,8 +10,9 @@
 	const H = 300;
 	const PAD = 8;
 
-	const max = $derived(Math.max(1, ...points.map((p) => p.clicks)));
+	const max = $derived(Math.max(1, ...points.map((point) => point.clicks)));
 	const step = $derived(points.length > 1 ? (W - PAD * 2) / (points.length - 1) : 0);
+	const hasConversions = $derived(points.some((point) => point.conversions > 0));
 
 	function x(index: number): number {
 		return PAD + index * step;
@@ -21,8 +22,24 @@
 		return H - PAD - (value / max) * (H - PAD * 2);
 	}
 
-	const linePath = $derived(
-		points.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(index)},${y(point.clicks)}`).join(' ')
+	function path(pick: (point: TimePoint) => number): string {
+		return points
+			.map((point, index) => `${index === 0 ? 'M' : 'L'}${x(index)},${y(pick(point))}`)
+			.join(' ');
+	}
+
+	const linePath = $derived(path((point) => point.clicks));
+	const uniquePath = $derived(path((point) => point.uniques));
+	// Conversions are orders of magnitude smaller than clicks, so they get their
+	// own scale — the shape of the curve is the point, not its height.
+	const conversionMax = $derived(Math.max(1, ...points.map((point) => point.conversions)));
+	const conversionPath = $derived(
+		points
+			.map(
+				(point, index) =>
+					`${index === 0 ? 'M' : 'L'}${x(index)},${H - PAD - (point.conversions / conversionMax) * (H - PAD * 2) * 0.5}`
+			)
+			.join(' ')
 	);
 
 	const areaPath = $derived(
@@ -80,6 +97,16 @@
 		{#if points.length > 1}
 			<path d={areaPath} fill="url(#clicks-fill)" />
 			<path
+				d={uniquePath}
+				fill="none"
+				stroke="currentColor"
+				stroke-opacity="0.35"
+				stroke-width="1.5"
+				stroke-dasharray="3 4"
+				vector-effect="non-scaling-stroke"
+				stroke-linejoin="round"
+			/>
+			<path
 				d={linePath}
 				fill="none"
 				stroke="currentColor"
@@ -88,6 +115,16 @@
 				stroke-linejoin="round"
 				stroke-linecap="round"
 			/>
+			{#if hasConversions}
+				<path
+					d={conversionPath}
+					fill="none"
+					class="stroke-emerald-500"
+					stroke-width="1.5"
+					vector-effect="non-scaling-stroke"
+					stroke-linejoin="round"
+				/>
+			{/if}
 		{/if}
 
 		{#if hovered !== null && active}
@@ -114,20 +151,38 @@
 		<div
 			class="border-border bg-popover text-popover-foreground pointer-events-none absolute top-2 rounded-lg border px-3 py-2 text-xs shadow-md"
 			style="left: clamp(0px, {(hovered! / Math.max(1, points.length - 1)) *
-				100}% - 60px, calc(100% - 130px))"
+				100}% - 60px, calc(100% - 150px))"
 		>
 			<p class="font-medium">{formatBucket(active.bucket)}</p>
 			<p class="text-muted-foreground mt-0.5 tabular-nums">
 				{formatNumber(active.clicks)} clicks · {formatNumber(active.uniques)} unique
 			</p>
+			{#if hasConversions}
+				<p class="mt-0.5 tabular-nums text-emerald-600 dark:text-emerald-400">
+					{formatNumber(active.conversions)} conversions
+				</p>
+			{/if}
 		</div>
 	{/if}
 </div>
 
 {#if points.length > 1}
-	<div class="text-muted-foreground mt-2 flex justify-between text-[11px]">
+	<div class="text-muted-foreground mt-2 flex items-center justify-between text-[11px]">
 		<span>{formatBucket(points[0].bucket)}</span>
-		<span class="tabular-nums">peak {formatCount(max)}</span>
+		<span class="flex items-center gap-3">
+			<span class="flex items-center gap-1">
+				<span class="bg-foreground h-px w-3"></span> clicks
+			</span>
+			<span class="flex items-center gap-1">
+				<span class="bg-foreground/35 h-px w-3"></span> unique
+			</span>
+			{#if hasConversions}
+				<span class="flex items-center gap-1">
+					<span class="h-px w-3 bg-emerald-500"></span> conversions
+				</span>
+			{/if}
+			<span class="tabular-nums">peak {formatCount(max)}</span>
+		</span>
 		<span>{formatBucket(points[points.length - 1].bucket)}</span>
 	</div>
 {/if}

@@ -8,8 +8,12 @@ host (`link.raygen.dev/*`), and managed from a dashboard on its own subdomain
 - **Redirects are one KV read.** The hot path is handled in `hooks.server.ts`
   before SvelteKit routing, and analytics are written after the response is
   already on its way to the visitor.
-- **Everything Cloudflare tells us about a click is stored** — geo, network,
-  ASN, TLS, edge colo, device, browser, referrer, language, and UTM tags.
+- **Everything Cloudflare tells us about a click is stored** — 88 columns per
+  click: geo, network, ASN, TLS, JA4, bot score, edge colo, client hints, fetch
+  metadata, referrer, UTM and ad-click IDs, plus the routing decision the edge
+  made and how long it took.
+- **Any number of domains**, each with its own slug namespace, root redirect and
+  404 destination.
 - **Cloudflare-native throughout**: Workers, D1, KV, and (optionally) Analytics
   Engine. No external services.
 
@@ -85,7 +89,10 @@ workspace, so its own CI needs no registry credentials.
 | `links.raygen.dev/*` | `links` — the dashboard and REST API |
 | `raygen.dev/<anything else>` | Neither Worker's route — left to whatever else runs on the zone |
 
-Matching is driven by two settings, shared by both Workers:
+Matching happens in two layers.
+
+The first is driven by two environment settings shared by both Workers, and
+costs no lookup at all:
 
 - **`SHORT_PREFIX`** (`/l`) matches `<prefix>/<slug>` on *any* host. That is what
   makes `raygen.dev/l/abc` work without claiming the rest of the apex, and what
@@ -98,26 +105,77 @@ Matching is driven by two settings, shared by both Workers:
 The apex is deliberately **not** in `SHORT_HOSTS`: it only answers under the
 prefix, so the rest of `raygen.dev` stays untouched.
 
+The second layer is the **domain table**. A domain registered in the dashboard
+is published to KV, and the redirect Worker recognises it from there — including
+its own path prefix, root redirect and 404 destination. Adding a domain needs a
+Cloudflare route and nothing else: no redeploy, no `SHORT_HOSTS` edit.
+
+The two layers exist because they cost different things. The environment
+settings are a string comparison; the domain lookup is a KV read, which is why
+the dashboard's hook only ever uses the first layer and the redirect Worker —
+whose routes are short links and nothing else — pays for the second.
+
+### Domains and slug namespaces
+
+`link.slug` is unique per domain, not globally. The same slug on two domains is
+two different links, and moving a link between domains is a slug reservation on
+the new one. The user's **default** domain is special twice over: new links land
+there when none is named, and its links are published to KV a second time under
+a wildcard namespace, which is what makes `<SHORT_PREFIX>/<slug>` resolve on
+hosts that are not registered domains — the dashboard's own `/l/*` fallback, and
+`localhost:5173/l/*`.
+
 ## Features
 
-**Links** — custom or generated slugs, titles, tags, notes, enable/disable,
-`301`/`302`/`307`/`308` status choice, QR codes (PNG and SVG).
+**Links** — custom or generated slugs, titles, notes, tags, folders, enable and
+disable, archive, `301`/`302`/`307`/`308` status choice, and QR codes with
+custom colours, dot styles and an embedded logo.
+
+**Domains** — register as many hostnames as you like. Slugs are unique *per
+domain*, so `go/launch` and `link.example.com/launch` can point somewhere
+different. Each domain has its own generated-slug length, default status code,
+root redirect, unknown-slug redirect and expired-link redirect.
 
 **Rules and limits** — expiry dates, click caps that disable the link when
 reached, a fallback URL for expired links, password protection (PBKDF2 via Web
 Crypto), query-string forwarding, and UTM tags appended on every redirect.
 
-**Targeting** — route visitors to different destinations by country, continent,
-device, OS, language, or referrer. Rules are evaluated at the edge from the same
-KV record as the redirect, so targeting costs nothing extra.
+**Targeting** — route visitors by country, region, city, continent, device, OS,
+browser, language, referrer, ASN, time zone or query string. Each rule picks its
+own operator (`is`, `contains`, `starts with`, `ends with`, `is not`) and accepts
+comma-separated alternatives. Rules are evaluated at the edge from the same KV
+record as the redirect, so targeting costs nothing extra.
 
-**Analytics** — clicks and unique visitors over time, plus breakdowns by
-country, city, referrer, device, browser, OS, language, Cloudflare edge
-location, and network, with a live event feed showing the raw IP and user agent
-behind every click. Unique visitors are counted with a salted per-link hash of
-IP + user agent, stored alongside the raw values.
+**Split testing** — weighted A/B/n arms, with each visitor pinned to their arm by
+cookie so repeat clicks stay consistent. Every click records which arm served it.
 
-**API** — `/api/v1/links` with bearer-token API keys managed from Settings.
+**Deep links** — hand iOS and Android visitors to a native app, with a store or
+web fallback when nothing opens it.
+
+**Cloaking and privacy** — frame the destination so the short URL stays in the
+address bar (with OpenGraph tags for previews), or bounce through a
+`no-referrer` document so the destination never learns which link sent the
+visitor.
+
+**Conversions** — turn on tracking and the redirect appends `clid=<click id>` to
+the destination. Post it back to `/api/v1/conversions` with an event name and a
+value, and the outcome is attributed to that exact click — inheriting its
+country, device, referrer and A/B arm.
+
+**Webhooks** — HMAC-signed deliveries for `link.created`, `link.updated`,
+`link.deleted`, `link.archived`, `link.clicked`, `link.limit_reached` and
+`conversion.recorded`, fired after the response has already gone out.
+
+**Analytics** — clicks, unique visitors, conversions and revenue over any window
+(presets or an arbitrary `from`/`to`), bucketed hourly, daily, weekly or monthly,
+with every metric compared against the preceding period. Thirty-seven breakdown
+dimensions, a weekday-by-hour heatmap, a live event feed showing the raw IP and
+user agent behind every click, and CSV export of the raw rows. Bots can be
+included, excluded or isolated.
+
+**API** — a REST API over links, bulk operations, CSV import and export,
+domains, folders, webhooks, conversions, QR rendering and analytics, with bearer
+tokens managed from Settings.
 
 ## Setup
 
@@ -150,12 +208,21 @@ Edit the `vars` block in `wrangler.jsonc`:
 | `SIGNUP_MODE` | `open`, `invite`, or `closed` |
 | `SIGNUP_ALLOWLIST` | Comma-separated emails or `@domain` suffixes for `invite` |
 
+`SHORT_URL` seeds the first domain: on first sign-in the dashboard creates a
+default domain from its hostname and path, and everything after that is managed
+under **Settings → Domains**.
+
 Then set the secrets:
 
 ```sh
 npx wrangler secret put BETTER_AUTH_SECRET   # 32+ random characters
 npx wrangler secret put VISITOR_HASH_SALT    # optional, defaults to the auth secret
 ```
+
+**Set `VISITOR_HASH_SALT` on the redirect Worker too**, to the same value. Both
+Workers hash visitors, and each falls back to `BETTER_AUTH_SECRET` and then to a
+built-in constant — so if only one of them has a salt, the two disagree about
+which visitors are new and unique counts drift.
 
 Social login is enabled automatically when the matching pair of secrets exists:
 `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`, `GOOGLE_CLIENT_ID` /
@@ -167,6 +234,14 @@ Social login is enabled automatically when the matching pair of secrets exists:
 npm run db:migrate        # applies drizzle/ to the remote D1 database
 npm run deploy            # the dashboard Worker
 ```
+
+Upgrading an existing instance runs `0002_link_platform`, which adds the domain,
+folder, conversion and webhook tables, widens `click` to 88 columns, and moves
+slug uniqueness from global to per-domain. It backfills a default domain per user
+with a placeholder hostname; the first dashboard page view after the migration
+rewrites that placeholder from `SHORT_URL` and republishes every KV record, so
+there is nothing to do by hand. Links keep resolving throughout — the redirect
+path falls back to the default domain for any host it does not recognise.
 
 The redirect Worker deploys from its own repository — see
 [`lordbagel42/links-agent`](https://github.com/lordbagel42/links-agent). Both
@@ -202,6 +277,18 @@ route is a zone route, so it only fires if the apex already resolves through
 Cloudflare (an orange-clouded `A`/`AAAA`/`CNAME` record); since a Worker is
 already serving the apex, that record exists.
 
+### 4. Adding another domain later
+
+Two steps, in either order:
+
+1. Add a route to `links-agent/wrangler.jsonc` — a `custom_domain` entry for a
+   host given over entirely to short links, or a `zone_name` path route to serve
+   them under a prefix — and redeploy that Worker.
+2. Register the hostname under **Settings → Domains**.
+
+The second step is what creates the slug namespace and publishes the domain's
+settings to KV. Nothing in this repository needs redeploying for it.
+
 ## Local development
 
 ```sh
@@ -230,6 +317,7 @@ Useful scripts:
 ## API
 
 Create a key under **Settings → API keys**, then send it as a bearer token.
+Session cookies work too, which is what the dashboard's own import dialog uses.
 
 ```sh
 curl https://links.raygen.dev/api/v1/links \
@@ -243,17 +331,99 @@ curl -X POST https://links.raygen.dev/api/v1/links \
         "slug": "launch",
         "tags": ["marketing"],
         "expiresAt": "2026-12-31T00:00:00Z",
-        "utm": { "source": "newsletter" }
+        "trackConversions": true,
+        "utm": { "source": "newsletter" },
+        "rules": [
+          { "type": "country", "op": "is", "value": "DE,AT,CH",
+            "destination": "https://example.com/de" }
+        ],
+        "variants": [
+          { "label": "A", "destination": "https://example.com/a", "weight": 50 },
+          { "label": "B", "destination": "https://example.com/b", "weight": 50 }
+        ]
       }'
 ```
 
+### Links
+
 | Method | Path | Does |
 | --- | --- | --- |
-| `GET` | `/api/v1/links` | List links (`search`, `tag`, `sort`, `status`, `limit`, `offset`) |
+| `GET` | `/api/v1/links` | List links (`search`, `tag`, `folder`, `domain`, `sort`, `status`, `limit`, `offset`) |
 | `POST` | `/api/v1/links` | Create a link; `slug` is generated when omitted |
 | `GET` | `/api/v1/links/:id` | Fetch one link; add `?analytics=1&range=30d` for stats |
 | `PATCH` | `/api/v1/links/:id` | Update any subset of fields |
-| `DELETE` | `/api/v1/links/:id` | Delete the link and its click history |
+| `DELETE` | `/api/v1/links/:id` | Delete the link, its clicks and its conversions |
+| `GET` | `/api/v1/links/:id/qr` | Render the QR as SVG (`fg`, `bg`, `style`, `margin`, `size`, `ec`, `track`) |
+| `POST` | `/api/v1/links/bulk` | `action`: `create` (up to 1000), `delete`, `archive`, `tag` |
+| `GET` | `/api/v1/links/export` | Every link as CSV, honouring the list filters |
+| `POST` | `/api/v1/links/import` | Import `text/csv` or JSON; header names are matched loosely |
+
+```sh
+# 1000 links in one call
+curl -X POST https://links.raygen.dev/api/v1/links/bulk \
+  -H "Authorization: Bearer lnk_…" -H "content-type: application/json" \
+  -d '{"action":"create","links":[{"destination":"https://example.com/1"}]}'
+
+# an export is a valid import, which is how you move between instances
+curl https://links.raygen.dev/api/v1/links/export -H "Authorization: Bearer lnk_…" > links.csv
+curl -X POST https://links.raygen.dev/api/v1/links/import \
+  -H "Authorization: Bearer lnk_…" -H "content-type: text/csv" --data-binary @links.csv
+```
+
+### Domains, folders, webhooks, conversions
+
+| Method | Path | Does |
+| --- | --- | --- |
+| `GET` `POST` | `/api/v1/domains` | List and register domains |
+| `GET` `PATCH` `DELETE` | `/api/v1/domains/:id` | Read, update, remove (removing takes its links with it) |
+| `GET` `POST` | `/api/v1/folders` | List and create folders |
+| `PATCH` `DELETE` | `/api/v1/folders/:id` | Rename, recolour, delete (links survive) |
+| `GET` `POST` | `/api/v1/webhooks` | List and create; the secret is returned exactly once |
+| `PATCH` `POST` `DELETE` | `/api/v1/webhooks/:id` | Update, send a test delivery, remove |
+| `GET` `POST` | `/api/v1/conversions` | List and report conversions |
+
+### Analytics
+
+| Method | Path | Does |
+| --- | --- | --- |
+| `GET` | `/api/v1/analytics` | Totals, previous-period totals, time series, heatmap and every breakdown |
+| `GET` | `/api/v1/analytics/export` | Every click in the window as CSV — all 88 columns |
+
+Both accept the same scope and window parameters:
+
+| Parameter | Meaning |
+| --- | --- |
+| `link`, `domain`, `folder` | Narrow the scope |
+| `range` | `today`, `24h`, `7d`, `30d`, `90d`, `12m`, `all` |
+| `from`, `to` | An arbitrary window; anything `Date.parse` understands, or epoch ms |
+| `interval` | `hour`, `day`, `week`, `month` — otherwise chosen from the window |
+| `bots` | `all` (default), `exclude`, `only` |
+| `include` | `clicks` adds the raw event feed, `top` adds the per-link rollup |
+
+### Webhooks
+
+Every delivery is a `POST` with a JSON body and an
+`X-Links-Signature: t=<unix seconds>,v1=<hex>` header. The HMAC-SHA256 covers
+`<t>.<body>` using the secret shown when the webhook was created, so a captured
+delivery cannot be replayed against a different payload or timestamp:
+
+```js
+const [t, v1] = signature.split(',').map((part) => part.split('=')[1]);
+const expected = hmacSha256Hex(secret, `${t}.${rawBody}`);
+// then compare `expected` with `v1` in constant time
+```
+
+### Conversions
+
+Turn on **Track conversions** for a link and every redirect gains a `clid`
+parameter. Capture it on your side — usually into a cookie at the landing page —
+and report the outcome when it happens:
+
+```sh
+curl -X POST https://links.raygen.dev/api/v1/conversions \
+  -H "Authorization: Bearer lnk_…" -H "content-type: application/json" \
+  -d '{"clid":"…","event":"purchase","value":49.5,"currency":"USD"}'
+```
 
 ## Analytics Engine
 
@@ -322,10 +492,39 @@ reason.
 
 **Raw IPs are stored.** Every click keeps the client address from
 `cf-connecting-ip` and the full user-agent string in `click.ip` /
-`click.user_agent`, so the event feed can show exactly who hit a link. That is
-personal data under GDPR and similar regimes — if you publish links to visitors
-in those jurisdictions, say so in your privacy notice and prune the `click`
-table on whatever retention schedule you have committed to.
+`click.user_agent`, so the event feed can show exactly who hit a link. Alongside
+them sit client hints, a JA3/JA4 TLS fingerprint, and coarse coordinates. That
+is a lot of personal data under GDPR and similar regimes — if you publish links
+to visitors in those jurisdictions, say so in your privacy notice and prune the
+`click` table on whatever retention schedule you have committed to. `dnt` and
+`sec-gpc` are recorded rather than honoured; acting on them is your call, and
+the columns are there so you can.
+
+**Cloaking depends on the destination.** Framing only works if the destination
+does not send `X-Frame-Options` or a framing CSP — plenty of sites do, and there
+is nothing a shortener can do about it. The cloak page carries an "open
+directly" link so a blocked frame is not a dead end.
+
+**Split tests are sticky per browser, not per person.** The arm is pinned with a
+30-day cookie keyed on the link id, so a visitor who clears cookies or switches
+device can land on the other arm. The roll itself is stored rather than the arm
+index, which means re-weighting a live test moves the boundary without
+reshuffling everyone already in it.
+
+**Conversions are exact, not modelled.** `clid` is the click's own primary key,
+so an attributed conversion inherits that click's country, device, referrer and
+A/B arm with no join and no guesswork. The trade is that it only works if your
+destination actually keeps the parameter.
+
+**Webhooks cost nothing when unused.** The subscriber list lives in one KV key
+per user, read inside `waitUntil` after the response has gone out, and a user
+with no webhooks has no key at all.
+
+**Analytics is 37 queries in one batch.** Each breakdown dimension is its own
+`GROUP BY` against `click`, sent to D1 as a single batch. The obvious
+alternative — one `UNION ALL` over every dimension — is not available: workerd's
+SQLite is built with a small `SQLITE_MAX_COMPOUND_SELECT` and rejects a union of
+even eight branches.
 
 **Analytics Engine is optional.** When the `CLICKS_AE` binding exists each click
 is mirrored there as well. D1 is the source of truth and the only thing the

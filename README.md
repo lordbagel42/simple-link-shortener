@@ -15,9 +15,28 @@ SvelteKit 2, Svelte 5, Tailwind 4, shadcn-svelte, Drizzle, better-auth.
 ## Features
 
 **Links** — custom or generated slugs, titles, notes, up to 12 tags,
-enable/disable, `301`/`302`/`307`/`308` per link, QR codes as PNG or SVG.
+enable/disable, `301`/`302`/`307`/`308` per link, QR codes as PNG or SVG, and a
+duplicate action that opens the create dialog prefilled from an existing link.
 Generated slugs skip `0`, `1`, `i`, `l` and `o`. Reserved words like `api` and
 `login` are refused.
+
+**Several slugs per link** — one link can answer to any number of slugs, all
+reaching the same destination and sharing one set of analytics. Each is its own
+KV key, so an alias resolves in the same single read as the primary. `link.slug`
+is the primary, which is what the dashboard shows and what QR codes point at.
+
+**Pattern slugs** — `f/:form` matches `/f/anything` and passes what it captured
+to the destination, `https://forms.example.com/form/:form`. A trailing `*` takes
+the rest of the path. Patterns always start with a literal segment, so a plain
+one-segment link can never be shadowed by one — or pay for the lookup. They live
+in a single KV value, read only when an exact lookup misses on a multi-segment
+path.
+
+**Link previews** — what Slack, Discord and iMessage unfurl. Per link: the
+destination's own Open Graph card, fetched once and re-served under the short
+URL, or a branded card built from the link's title, notes and an image. Password
+links always unfurl as a card that gives nothing away. Anything unresolvable
+falls back to the redirect, and previews aren't counted as clicks.
 
 **Rules and limits**
 
@@ -97,6 +116,7 @@ the same D1 and KV.
 | --- | --- |
 | `example.com/l/<slug>` | `links-agent` |
 | `go.example.com/<slug>` | `links-agent`, at the root of a dedicated host |
+| `go.example.com/f/<anything>` | A pattern slug, if one claims the path |
 | `go.example.com/` | Bounces to the dashboard; anything else 404s |
 | `links.example.com/*` | This Worker |
 | `example.com/<anything else>` | Neither route — left alone |
@@ -104,6 +124,10 @@ the same D1 and KV.
 `SHORT_PREFIX` matches `<prefix>/<slug>` on any host, which is what makes
 `example.com/l/abc` work without claiming the apex. `SHORT_HOSTS` lists hosts
 given over entirely to slugs. Keep the apex out of it.
+
+A slug is normally one segment and one KV read. Multi-segment paths are accepted
+too, since patterns span more than one, and resolve to nothing unless a pattern
+claims them.
 
 ```jsonc
 // wrangler.jsonc
@@ -146,12 +170,14 @@ packages/links-core/  everything both Workers share
 drizzle/              migrations
 ```
 
-Releasing the shared core (`packages/links-core`) is a tag push:
+Both Workers run the same D1 statements, so a migration touching `link`,
+`link_slug` or `click` needs a matching edit in `packages/links-core/src/d1.ts`
+and a new release of the package. Releasing is a tag push:
 
 ```sh
 npm version patch -w @lordbagel42/links-core --no-git-tag-version
-git commit -am "release: links-core v0.1.1"
-git tag links-core-v0.1.1 && git push --follow-tags
+git commit -am "release: links-core v0.2.1"
+git tag links-core-v0.2.1 && git push --follow-tags
 ```
 
 Consumers need a `read:packages` token as `NODE_AUTH_TOKEN` — GitHub Packages
@@ -168,7 +194,12 @@ curl https://links.example.com/api/v1/links -H "Authorization: Bearer lnk_…"
 curl -X POST https://links.example.com/api/v1/links \
   -H "Authorization: Bearer lnk_…" \
   -H "content-type: application/json" \
-  -d '{"destination": "https://example.com/long/path", "slug": "launch"}'
+  -d '{
+        "destination": "https://example.com/long/path",
+        "slug": "launch",
+        "aliases": ["launch-2026", "go/launch"],
+        "preview": { "mode": "branded" }
+      }'
 ```
 
 | Method | Path | Does |
@@ -179,10 +210,13 @@ curl -X POST https://links.example.com/api/v1/links \
 | `PATCH` | `/api/v1/links/:id` | Update any subset of fields |
 | `DELETE` | `/api/v1/links/:id` | Delete the link and its clicks |
 
-Accepts everything the dashboard form does: `destination`, `slug`, `title`,
-`description`, `tags`, `enabled`, `password`, `expiresAt`, `maxClicks`,
-`fallbackUrl`, `forwardQuery`, `redirectStatus`, `rules`, and a nested `utm`
-object. Timestamps take epoch ms or anything `Date.parse` handles.
+Accepts everything the dashboard form does: `destination`, `slug`, `aliases`,
+`title`, `description`, `tags`, `enabled`, `password`, `expiresAt`, `maxClicks`,
+`fallbackUrl`, `forwardQuery`, `redirectStatus`, `rules`, and nested `preview`
+and `utm` objects. `preview.mode` is `target` (the default), `branded` or `off`;
+`preview.image` sets the card image for `branded`. Responses carry `aliases`
+back alongside `shortUrls`, one per slug. Timestamps take epoch ms or anything
+`Date.parse` handles.
 
 ## Analytics Engine
 
@@ -209,6 +243,13 @@ an archive. The dashboard reads D1 instead. Delete the
   so the cache heals itself. **Resync edge cache** in Settings republishes
   everything.
 - **Edits take up to a minute** to reach every colo. KV's edge TTL floor is 60s.
+- **Every slug is a full KV record.** Four slugs is four writes on save and still
+  one read on resolve. Patterns are the exception — they can't be found by key,
+  so they live in one index value republished whenever a pattern changes.
+- **A `target` preview costs one subrequest, once.** It fetches the
+  destination's `<head>` with a 2.5s timeout and caches the tags for an hour,
+  keyed by destination, so links sharing one share the fetch. Failures cache
+  briefly and fall back to the redirect.
 - **Click caps overshoot slightly** — a few clicks can land while KV catches up.
 - **`301` and `308` hide repeat clicks**, since browsers cache them. Hence the
   `302` default.

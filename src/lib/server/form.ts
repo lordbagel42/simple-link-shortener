@@ -1,5 +1,6 @@
 import type { LinkInput } from './links';
-import type { LinkRule } from './db/schema';
+import type { LinkRule, PreviewMode } from './db/schema';
+import { isPreviewMode } from '@lordbagel42/links-core';
 
 /**
  * Turn the link editor's form data into a `LinkInput`.
@@ -28,6 +29,9 @@ export function parseLinkForm(form: FormData, opts: { partial?: boolean } = {}):
 	const include = (name: string) => !opts.partial || has(name);
 
 	if (include('slug')) input.slug = text('slug') ?? undefined;
+	// Sent as a JSON array, like `rules`, so that clearing every alias is still
+	// a field the server can see rather than an absent one.
+	if (include('aliases')) input.aliases = parseStringArray(text('aliases'));
 	if (include('title')) input.title = text('title');
 	if (include('description')) input.description = text('description');
 	if (include('tags')) {
@@ -41,6 +45,11 @@ export function parseLinkForm(form: FormData, opts: { partial?: boolean } = {}):
 	if (include('fallbackUrl')) input.fallbackUrl = text('fallbackUrl');
 	if (include('maxClicks')) input.maxClicks = int('maxClicks');
 	if (include('redirectStatus')) input.redirectStatus = int('redirectStatus') ?? 302;
+	if (include('previewMode')) {
+		const mode = text('previewMode');
+		input.previewMode = isPreviewMode(mode) ? (mode as PreviewMode) : 'target';
+	}
+	if (include('previewImage')) input.previewImage = text('previewImage');
 	if (include('utmSource')) input.utmSource = text('utmSource');
 	if (include('utmMedium')) input.utmMedium = text('utmMedium');
 	if (include('utmCampaign')) input.utmCampaign = text('utmCampaign');
@@ -73,6 +82,16 @@ function parseRules(raw: string | null): LinkRule[] {
 	try {
 		const parsed = JSON.parse(raw);
 		return Array.isArray(parsed) ? (parsed as LinkRule[]) : [];
+	} catch {
+		return [];
+	}
+}
+
+function parseStringArray(raw: string | null): string[] {
+	if (!raw) return [];
+	try {
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed) ? parsed.map(String) : [];
 	} catch {
 		return [];
 	}

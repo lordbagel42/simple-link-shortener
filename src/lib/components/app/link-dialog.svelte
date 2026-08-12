@@ -12,21 +12,29 @@
 	import { toast } from 'svelte-sonner';
 	import { generateSlug } from '$lib/slug';
 	import { toDateTimeLocal } from '$lib/format';
-	import type { LinkRule, SerializedLink } from '$lib/types';
+	import type { LinkRule, PreviewMode, SerializedLink } from '$lib/types';
 
 	let {
 		open = $bindable(false),
 		link = null,
+		duplicate = false,
 		shortBase
 	}: {
 		open?: boolean;
 		link?: SerializedLink | null;
+		/** Prefill from `link` but create a new one — everything except the slugs. */
+		duplicate?: boolean;
 		shortBase: string;
 	} = $props();
 
-	const editing = $derived(Boolean(link));
+	const editing = $derived(Boolean(link) && !duplicate);
+	const duplicating = $derived(Boolean(link) && duplicate);
+	// Only a real edit can leave an existing password alone; a copy has no hash
+	// to carry over, because the browser never sees one.
+	const keepsPassword = $derived(editing && Boolean(link?.hasPassword));
 
 	let slug = $state('');
+	let aliases = $state<string[]>([]);
 	let destination = $state('');
 	let title = $state('');
 	let description = $state('');
@@ -44,6 +52,8 @@
 	let utmCampaign = $state('');
 	let utmTerm = $state('');
 	let utmContent = $state('');
+	let previewMode = $state<PreviewMode>('target');
+	let previewImage = $state('');
 	let rules = $state<LinkRule[]>([]);
 	let submitting = $state(false);
 	let error = $state<string | null>(null);
@@ -51,7 +61,10 @@
 	// Refill the form whenever the dialog is opened for a different link.
 	$effect(() => {
 		if (!open) return;
-		slug = link?.slug ?? '';
+		// A copy takes everything but the slugs — those have to be unique, and an
+		// empty one is filled in for you.
+		slug = duplicate ? '' : (link?.slug ?? '');
+		aliases = duplicate ? [] : [...(link?.aliases ?? [])];
 		destination = link?.destination ?? '';
 		title = link?.title ?? '';
 		description = link?.description ?? '';
@@ -69,6 +82,8 @@
 		utmCampaign = link?.utmCampaign ?? '';
 		utmTerm = link?.utmTerm ?? '';
 		utmContent = link?.utmContent ?? '';
+		previewMode = link?.previewMode ?? 'target';
+		previewImage = link?.previewImage ?? '';
 		rules = structuredClone($state.snapshot(link?.rules ?? []));
 		error = null;
 	});
@@ -89,6 +104,24 @@
 		{ value: '308', label: '308 — Permanent, keeps method' }
 	];
 
+	const previewModes: { value: PreviewMode; label: string; hint: string }[] = [
+		{
+			value: 'target',
+			label: "The destination's card",
+			hint: "Fetches the destination's own preview and serves it under the short link."
+		},
+		{
+			value: 'branded',
+			label: 'A card of your own',
+			hint: 'Shows the title and notes below, and where the link goes.'
+		},
+		{
+			value: 'off',
+			label: 'No preview page',
+			hint: 'Chat clients follow the redirect and unfurl whatever they find.'
+		}
+	];
+
 	function addRule() {
 		rules = [...rules, { type: 'country', value: '', destination: '' }];
 	}
@@ -96,16 +129,32 @@
 	function removeRule(index: number) {
 		rules = rules.filter((_, i) => i !== index);
 	}
+
+	function addAlias() {
+		aliases = [...aliases, ''];
+	}
+
+	function removeAlias(index: number) {
+		aliases = aliases.filter((_, i) => i !== index);
+	}
+
+	const displayBase = $derived(shortBase.replace(/^https?:\/\//, ''));
+	// Empty rows are just an editor artefact; the server never sees them.
+	const submittedAliases = $derived(aliases.map((alias) => alias.trim()).filter(Boolean));
 </script>
 
 <Dialog.Root bind:open>
 	<Dialog.Content class="sm:max-w-[560px]">
 		<Dialog.Header>
-			<Dialog.Title>{editing ? 'Edit link' : 'Create link'}</Dialog.Title>
+			<Dialog.Title>
+				{editing ? 'Edit link' : duplicating ? 'Duplicate link' : 'Create link'}
+			</Dialog.Title>
 			<Dialog.Description>
 				{editing
 					? 'Changes reach the edge within about a minute.'
-					: 'Point a short slug at any destination.'}
+					: duplicating
+						? `Everything from /${link!.slug} except its slugs. Leave the short link blank for a generated one.`
+						: 'Point a short slug at any destination.'}
 			</Dialog.Description>
 		</Dialog.Header>
 
@@ -122,7 +171,9 @@
 						error = (result.data?.message as string) ?? 'Could not save the link.';
 						return;
 					}
-					if (result.type === 'success') {
+					// A duplicate created from a link's own page answers with a
+					// redirect to the copy rather than data.
+					if (result.type === 'success' || result.type === 'redirect') {
 						toast.success(editing ? 'Link updated' : 'Link created');
 						open = false;
 					}
@@ -134,10 +185,12 @@
 				<input type="hidden" name="id" value={link!.id} />
 			{/if}
 			<input type="hidden" name="rules" value={JSON.stringify(rules)} />
+			<input type="hidden" name="aliases" value={JSON.stringify(submittedAliases)} />
 			<input type="hidden" name="enabled" value={String(enabled)} />
 			<input type="hidden" name="forwardQuery" value={String(forwardQuery)} />
 			<input type="hidden" name="removePassword" value={String(removePassword)} />
 			<input type="hidden" name="redirectStatus" value={redirectStatus} />
+			<input type="hidden" name="previewMode" value={previewMode} />
 
 			<Tabs.Root value="general">
 				<Tabs.List class="w-full">
@@ -145,6 +198,7 @@
 					<Tabs.Trigger value="rules" class="flex-1">
 						Targeting{rules.length ? ` (${rules.length})` : ''}
 					</Tabs.Trigger>
+					<Tabs.Trigger value="preview" class="flex-1">Preview</Tabs.Trigger>
 					<Tabs.Trigger value="advanced" class="flex-1">Advanced</Tabs.Trigger>
 				</Tabs.List>
 
@@ -164,7 +218,7 @@
 						<Label for="slug">Short link</Label>
 						<div class="flex items-center gap-2">
 							<span class="text-muted-foreground shrink-0 font-mono text-xs">
-								{shortBase.replace(/^https?:\/\//, '')}/
+								{displayBase}/
 							</span>
 							<Input
 								id="slug"
@@ -185,6 +239,55 @@
 								<Shuffle class="size-4" />
 							</Button>
 						</div>
+
+						{#each aliases as _alias, index (index)}
+							<div class="flex items-center gap-2">
+								<span class="text-muted-foreground shrink-0 font-mono text-xs">
+									{displayBase}/
+								</span>
+								<Input
+									bind:value={aliases[index]}
+									placeholder="another-slug"
+									class="font-mono"
+									spellcheck="false"
+									aria-label="Additional slug {index + 1}"
+								/>
+								<Button
+									type="button"
+									variant="ghost"
+									size="icon"
+									class="text-muted-foreground hover:text-destructive shrink-0"
+									aria-label="Remove this slug"
+									onclick={() => removeAlias(index)}
+								>
+									<Trash2 class="size-4" />
+								</Button>
+							</div>
+						{/each}
+
+						<div class="flex items-center gap-2">
+							<Button
+								type="button"
+								variant="outline"
+								size="sm"
+								class="self-start"
+								onclick={addAlias}
+							>
+								<Plus class="size-4" />
+								Add another slug
+							</Button>
+							<p class="text-muted-foreground text-xs">
+								Every slug here reaches the same destination.
+							</p>
+						</div>
+
+						<p class="text-muted-foreground text-xs">
+							A slug with a placeholder becomes a pattern:
+							<code class="font-mono">f/:form</code> matches
+							<code class="font-mono">{displayBase}/f/anything</code> and passes what it captured
+							to the destination — <code class="font-mono">https://forms.example.com/form/:form</code
+							>. A trailing <code class="font-mono">*</code> takes the rest of the path.
+						</p>
 					</div>
 
 					<div class="flex flex-col gap-2">
@@ -251,6 +354,55 @@
 					</Button>
 				</Tabs.Content>
 
+				<Tabs.Content value="preview" class="mt-4 flex flex-col gap-4">
+					<p class="text-muted-foreground text-xs">
+						What Slack, Discord, iMessage and friends unfurl when this link is pasted into a
+						conversation. Preview requests are not counted as clicks.
+					</p>
+
+					<div class="flex flex-col gap-2">
+						<Label>Unfurls as</Label>
+						<Select.Root type="single" bind:value={previewMode}>
+							<Select.Trigger>
+								{previewModes.find((mode) => mode.value === previewMode)?.label}
+							</Select.Trigger>
+							<Select.Content>
+								{#each previewModes as mode (mode.value)}
+									<Select.Item value={mode.value}>{mode.label}</Select.Item>
+								{/each}
+							</Select.Content>
+						</Select.Root>
+						<p class="text-muted-foreground text-xs">
+							{previewModes.find((mode) => mode.value === previewMode)?.hint}
+						</p>
+					</div>
+
+					{#if previewMode === 'branded'}
+						<div class="flex flex-col gap-2">
+							<Label for="previewImage">Card image</Label>
+							<Input
+								id="previewImage"
+								name="previewImage"
+								bind:value={previewImage}
+								placeholder="https://example.com/card.png"
+							/>
+							<p class="text-muted-foreground text-xs">
+								Optional. Without one the card is text only. The title and notes on the other
+								tabs are what the card says.
+							</p>
+						</div>
+					{:else}
+						<input type="hidden" name="previewImage" value={previewImage} />
+					{/if}
+
+					{#if previewMode === 'target' && link?.hasPassword}
+						<p class="text-muted-foreground text-xs">
+							This link is password protected, so it always unfurls as a plain card — the
+							destination is never revealed to something that has not entered the password.
+						</p>
+					{/if}
+				</Tabs.Content>
+
 				<Tabs.Content value="advanced" class="mt-4 flex flex-col gap-4">
 					<div class="grid gap-4 sm:grid-cols-2">
 						<div class="flex flex-col gap-2">
@@ -293,10 +445,14 @@
 							type="password"
 							autocomplete="new-password"
 							bind:value={password}
-							placeholder={link?.hasPassword ? 'Unchanged' : 'No password'}
+							placeholder={keepsPassword
+								? 'Unchanged'
+								: duplicating && link?.hasPassword
+									? 'Not copied — set a new one'
+									: 'No password'}
 							disabled={removePassword}
 						/>
-						{#if link?.hasPassword}
+						{#if keepsPassword}
 							<label class="text-muted-foreground flex items-center gap-2 text-xs">
 								<input type="checkbox" bind:checked={removePassword} class="accent-foreground" />
 								Remove the existing password
@@ -364,7 +520,13 @@
 			<Dialog.Footer class="mt-2">
 				<Button type="button" variant="ghost" onclick={() => (open = false)}>Cancel</Button>
 				<Button type="submit" disabled={submitting}>
-					{submitting ? 'Saving…' : editing ? 'Save changes' : 'Create link'}
+					{submitting
+						? 'Saving…'
+						: editing
+							? 'Save changes'
+							: duplicating
+								? 'Create copy'
+								: 'Create link'}
 				</Button>
 			</Dialog.Footer>
 		</form>

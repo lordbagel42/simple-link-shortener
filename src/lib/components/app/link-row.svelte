@@ -5,6 +5,7 @@
 		ExternalLink,
 		QrCode,
 		Pencil,
+		Copy,
 		BarChart3,
 		Trash2,
 		Power,
@@ -25,11 +26,13 @@
 		link,
 		shortBase,
 		onedit,
+		onduplicate,
 		onqr
 	}: {
 		link: SerializedLink;
 		shortBase: string;
 		onedit: (link: SerializedLink) => void;
+		onduplicate: (link: SerializedLink) => void;
 		onqr: (link: SerializedLink) => void;
 	} = $props();
 
@@ -54,6 +57,15 @@
 			</a>
 			<CopyButton value={shortUrl} label="Copy short link" class="opacity-0 group-hover:opacity-100 focus-visible:opacity-100" />
 
+			{#if link.aliases.length > 0}
+				<Badge
+					variant="outline"
+					class="h-5 text-[11px] font-normal"
+					title="Also answers to {link.aliases.join(', ')}"
+				>
+					+{link.aliases.length}
+				</Badge>
+			{/if}
 			{#if !link.enabled}
 				<Badge variant="secondary" class="h-5 text-[11px]">Disabled</Badge>
 			{:else if expired}
@@ -133,6 +145,10 @@
 				<DropdownMenu.Item onSelect={() => onedit(link)}>
 					<Pencil class="size-4" />
 					Edit
+				</DropdownMenu.Item>
+				<DropdownMenu.Item onSelect={() => onduplicate(link)}>
+					<Copy class="size-4" />
+					Duplicate
 				</DropdownMenu.Item>
 				<DropdownMenu.Item onSelect={() => onqr(link)}>
 					<QrCode class="size-4" />

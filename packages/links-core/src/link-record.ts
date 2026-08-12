@@ -1,5 +1,8 @@
 import type { Env } from './env.js';
 import type { Link, LinkRule } from './db/schema.js';
+import type { PreviewMode } from './types.js';
+import { DEFAULT_PREVIEW_MODE, isPreviewMode } from './types.js';
+import { sortPatterns } from './pattern.js';
 
 /**
  * The subset of a link that the redirect hot path needs, stored in KV so a
@@ -8,8 +11,14 @@ import type { Link, LinkRule } from './db/schema.js';
 export type LinkRecord = {
 	id: string;
 	userId: string;
+	/** The primary slug — what the dashboard shows and what QR codes point at. */
 	slug: string;
+	/** Every slug that resolves here, primary first. One KV key per entry. */
+	slugs: string[];
 	destination: string;
+	/** Carried for the branded preview card, which is rendered at the edge. */
+	title: string | null;
+	description: string | null;
 	enabled: boolean;
 	/** Epoch ms. */
 	expiresAt: number | null;
@@ -18,6 +27,8 @@ export type LinkRecord = {
 	forwardQuery: boolean;
 	redirectStatus: number;
 	passwordHash: string | null;
+	previewMode: PreviewMode;
+	previewImage: string | null;
 	rules: LinkRule[];
 	utm: {
 		source: string | null;
@@ -33,12 +44,35 @@ export function linkKey(slug: string): string {
 	return `l:${slug.toLowerCase()}`;
 }
 
-export function toLinkRecord(link: Link): LinkRecord {
+/**
+ * The pattern index: every pattern slug in the store, in precedence order.
+ * Deliberately outside the `l:` namespace so no slug can ever collide with it.
+ */
+export const PATTERN_INDEX_KEY = 'p:index';
+
+/** Primary first, then the aliases, with case-insensitive duplicates dropped. */
+export function allSlugs(primary: string, aliases: Iterable<string> = []): string[] {
+	const seen = new Set<string>();
+	const slugs: string[] = [];
+	for (const slug of [primary, ...aliases]) {
+		const trimmed = slug.trim();
+		const key = trimmed.toLowerCase();
+		if (!trimmed || seen.has(key)) continue;
+		seen.add(key);
+		slugs.push(trimmed);
+	}
+	return slugs;
+}
+
+export function toLinkRecord(link: Link, slugs: string[] = [link.slug]): LinkRecord {
 	return {
 		id: link.id,
 		userId: link.userId,
 		slug: link.slug,
+		slugs: allSlugs(link.slug, slugs),
 		destination: link.destination,
+		title: link.title,
+		description: link.description,
 		enabled: link.enabled,
 		expiresAt: link.expiresAt ? link.expiresAt.getTime() : null,
 		maxClicks: link.maxClicks,
@@ -46,6 +80,8 @@ export function toLinkRecord(link: Link): LinkRecord {
 		forwardQuery: link.forwardQuery,
 		redirectStatus: link.redirectStatus,
 		passwordHash: link.passwordHash,
+		previewMode: isPreviewMode(link.previewMode) ? link.previewMode : DEFAULT_PREVIEW_MODE,
+		previewImage: link.previewImage,
 		rules: link.rules ?? [],
 		utm: {
 			source: link.utmSource,
@@ -60,11 +96,27 @@ export function toLinkRecord(link: Link): LinkRecord {
 export async function readLinkRecord(env: Env, slug: string): Promise<LinkRecord | null> {
 	// 60s is KV's own edge TTL floor; anything higher would delay edits reaching
 	// colos that have already cached the key.
-	return env.LINKS.get<LinkRecord>(linkKey(slug), { type: 'json', cacheTtl: 60 });
+	const record = await env.LINKS.get<LinkRecord>(linkKey(slug), { type: 'json', cacheTtl: 60 });
+	return record ? normalize(record) : null;
 }
 
-export async function writeLinkRecord(env: Env, link: Link): Promise<void> {
-	await putLinkRecord(env, toLinkRecord(link));
+/**
+ * Fields added after a record was written are absent from whatever is already
+ * sitting in KV, so every read is brought up to the current shape. Without this
+ * a deploy would need the whole namespace republished before it behaved.
+ */
+function normalize(record: LinkRecord): LinkRecord {
+	if (!Array.isArray(record.slugs) || record.slugs.length === 0) record.slugs = [record.slug];
+	if (!isPreviewMode(record.previewMode)) record.previewMode = DEFAULT_PREVIEW_MODE;
+	return record;
+}
+
+export async function writeLinkRecord(
+	env: Env,
+	link: Link,
+	slugs: string[] = [link.slug]
+): Promise<void> {
+	await putLinkRecord(env, toLinkRecord(link, slugs));
 }
 
 /** Publish a record straight to KV, without needing a database row to build it. */
@@ -75,11 +127,38 @@ export async function putLinkRecord(env: Env, record: LinkRecord): Promise<void>
 		? Math.max(60, Math.ceil((record.expiresAt - Date.now()) / 1000) + 60)
 		: undefined;
 
-	await env.LINKS.put(linkKey(record.slug), JSON.stringify(record), { expirationTtl });
+	// One key per slug: every alias is a full copy, so resolving an alias is the
+	// same single read as resolving the primary.
+	const body = JSON.stringify(record);
+	await Promise.all(
+		allSlugs(record.slug, record.slugs).map((slug) =>
+			env.LINKS.put(linkKey(slug), body, { expirationTtl })
+		)
+	);
 }
 
 export async function deleteLinkRecord(env: Env, slug: string): Promise<void> {
 	await env.LINKS.delete(linkKey(slug));
+}
+
+export async function deleteLinkRecords(env: Env, slugs: Iterable<string>): Promise<void> {
+	await Promise.all([...slugs].map((slug) => deleteLinkRecord(env, slug)));
+}
+
+/**
+ * Pattern slugs cannot be found by key, so the whole set is kept in one small
+ * KV value and read only when an exact lookup misses on a multi-segment path.
+ */
+export async function readPatternIndex(env: Env): Promise<string[] | null> {
+	const patterns = await env.LINKS.get<string[]>(PATTERN_INDEX_KEY, {
+		type: 'json',
+		cacheTtl: 60
+	});
+	return Array.isArray(patterns) ? patterns : null;
+}
+
+export async function writePatternIndex(env: Env, patterns: string[]): Promise<void> {
+	await env.LINKS.put(PATTERN_INDEX_KEY, JSON.stringify(sortPatterns(patterns)));
 }
 
 export type LinkState = 'ok' | 'disabled' | 'expired';

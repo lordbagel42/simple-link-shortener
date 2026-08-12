@@ -1,5 +1,5 @@
 import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
-import type { LinkRule } from '../types.js';
+import type { LinkRule, PreviewMode } from '../types.js';
 
 /* -------------------------------------------------------------------------- */
 /*  better-auth core schema                                                    */
@@ -75,13 +75,17 @@ export const verification = sqliteTable(
  * Targeting rules are stored as JSON on the link and mirrored into KV so the
  * redirect hot path can evaluate them without touching D1.
  */
-export type { LinkRule };
+export type { LinkRule, PreviewMode };
 
 export const link = sqliteTable(
 	'link',
 	{
 		id: text('id').primaryKey(),
-		/** The path segment after the short prefix, e.g. `gh` in `raygen.dev/l/gh`. */
+		/**
+		 * The link's primary slug, e.g. `gh` in `raygen.dev/l/gh`. A link can
+		 * answer to more than one — see `link_slug`, which holds this one too and
+		 * is what uniqueness is enforced against.
+		 */
 		slug: text('slug').notNull(),
 		destination: text('destination').notNull(),
 
@@ -114,6 +118,11 @@ export const link = sqliteTable(
 		utmTerm: text('utm_term'),
 		utmContent: text('utm_content'),
 
+		/** What chat clients and crawlers unfurl. See `PreviewMode`. */
+		previewMode: text('preview_mode').$type<PreviewMode>().notNull().default('target'),
+		/** Card image for `branded` previews. Falls back to a text-only card. */
+		previewImage: text('preview_image'),
+
 		/** 301 | 302 | 307 | 308. */
 		redirectStatus: integer('redirect_status').notNull().default(302),
 		/** Geo/device targeting rules, evaluated in order before the default destination. */
@@ -136,6 +145,32 @@ export const link = sqliteTable(
 
 export type Link = typeof link.$inferSelect;
 export type NewLink = typeof link.$inferInsert;
+
+/**
+ * Every slug that resolves to a link, the primary one included.
+ *
+ * The slug is the primary key, so this table — not `link.slug` — is what makes
+ * a slug unique across the whole store. `link.slug` stays as a denormalised
+ * copy of the primary so listing, sorting, and the click feed never need a
+ * join; the two are written together.
+ */
+export const linkSlug = sqliteTable(
+	'link_slug',
+	{
+		slug: text('slug').primaryKey(),
+		linkId: text('link_id')
+			.notNull()
+			.references(() => link.id, { onDelete: 'cascade' }),
+		/** Exactly one row per link has this set, and it mirrors `link.slug`. */
+		isPrimary: integer('is_primary', { mode: 'boolean' }).notNull().default(false),
+		/** `f/:form` rather than `gh` — matched instead of looked up. */
+		isPattern: integer('is_pattern', { mode: 'boolean' }).notNull().default(false),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+	},
+	(t) => [index('link_slug_link_id_idx').on(t.linkId), index('link_slug_pattern_idx').on(t.isPattern)]
+);
+
+export type LinkSlug = typeof linkSlug.$inferSelect;
 
 /* -------------------------------------------------------------------------- */
 /*  Clicks                                                                     */
@@ -253,6 +288,7 @@ export const schema = {
 	account,
 	verification,
 	link,
+	linkSlug,
 	click,
 	apiKey
 };

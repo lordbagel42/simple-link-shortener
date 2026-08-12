@@ -1,6 +1,13 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { apiError, apiLink, parseTimestamp, requireApiUser, utmFrom } from '$lib/server/api';
+import {
+	apiError,
+	apiLink,
+	parseTimestamp,
+	previewFrom,
+	requireApiUser,
+	utmFrom
+} from '$lib/server/api';
 import { LinkError, createLink, listLinks, type ListOptions } from '$lib/server/links';
 
 /** `GET /api/v1/links` — list the caller's links. */
@@ -43,6 +50,7 @@ export const POST: RequestHandler = async (event) => {
 		const link = await createLink(auth.env, auth.userId, {
 			destination: String(body.destination ?? ''),
 			slug: body.slug ? String(body.slug) : undefined,
+			aliases: Array.isArray(body.aliases) ? body.aliases.map(String) : [],
 			title: body.title == null ? null : String(body.title),
 			description: body.description == null ? null : String(body.description),
 			tags: Array.isArray(body.tags) ? body.tags.map(String) : [],
@@ -54,6 +62,7 @@ export const POST: RequestHandler = async (event) => {
 			forwardQuery: Boolean(body.forwardQuery),
 			redirectStatus: body.redirectStatus ? Number(body.redirectStatus) : 302,
 			rules: Array.isArray(body.rules) ? (body.rules as never) : [],
+			...previewFrom(body),
 			...utmFrom(body)
 		});
 

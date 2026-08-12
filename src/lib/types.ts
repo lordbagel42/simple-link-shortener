@@ -8,15 +8,17 @@
 // The targeting-rule vocabulary is evaluated on the redirect path, so it is
 // defined in the shared core and re-exported here for the components that
 // render the rule editor.
-export type { LinkRule } from '@lordbagel42/links-core';
-export { RULE_TYPES } from '@lordbagel42/links-core';
+export type { LinkRule, PreviewMode } from '@lordbagel42/links-core';
+export { RULE_TYPES, PREVIEW_MODES } from '@lordbagel42/links-core';
 
-import type { LinkRule } from '@lordbagel42/links-core';
+import type { LinkRule, PreviewMode } from '@lordbagel42/links-core';
 
 /** A link as sent to the browser: dates flattened to epoch ms, no password hash. */
 export type SerializedLink = {
 	id: string;
 	slug: string;
+	/** Extra slugs that resolve to this same link. */
+	aliases: string[];
 	destination: string;
 	title: string | null;
 	description: string | null;
@@ -34,6 +36,8 @@ export type SerializedLink = {
 	utmTerm: string | null;
 	utmContent: string | null;
 	redirectStatus: number;
+	previewMode: PreviewMode;
+	previewImage: string | null;
 	rules: LinkRule[];
 	clickCount: number;
 	uniqueCount: number;

@@ -18,6 +18,7 @@
 	// svelte-ignore state_referenced_locally
 	let search = $state(data.filters.search ?? '');
 	let editing = $state<SerializedLink | null>(null);
+	let duplicating = $state(false);
 	let dialogOpen = $state(false);
 	let qrLink = $state<SerializedLink | null>(null);
 	let qrOpen = $state(false);
@@ -48,11 +49,19 @@
 
 	function openCreate() {
 		editing = null;
+		duplicating = false;
 		dialogOpen = true;
 	}
 
 	function openEdit(link: SerializedLink) {
 		editing = link;
+		duplicating = false;
+		dialogOpen = true;
+	}
+
+	function openDuplicate(link: SerializedLink) {
+		editing = link;
+		duplicating = true;
 		dialogOpen = true;
 	}
 
@@ -177,7 +186,13 @@
 			</div>
 		{:else}
 			{#each data.links as link (link.id)}
-				<LinkRow {link} shortBase={data.shortBase} onedit={openEdit} onqr={openQr} />
+				<LinkRow
+					{link}
+					shortBase={data.shortBase}
+					onedit={openEdit}
+					onduplicate={openDuplicate}
+					onqr={openQr}
+				/>
 			{/each}
 		{/if}
 	</div>
@@ -190,7 +205,12 @@
 	{/if}
 </div>
 
-<LinkDialog bind:open={dialogOpen} link={editing} shortBase={data.shortBase} />
+<LinkDialog
+	bind:open={dialogOpen}
+	link={editing}
+	duplicate={duplicating}
+	shortBase={data.shortBase}
+/>
 
 {#if qrLink}
 	<QrDialog bind:open={qrOpen} url="{data.shortBase}/{qrLink.slug}" slug={qrLink.slug} />

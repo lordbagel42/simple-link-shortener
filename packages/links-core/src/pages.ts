@@ -33,6 +33,13 @@ const SHELL_STYLES = `
 	button:hover { background: #fff; }
 	.error { color: #ff6166; font-size: 13px; }
 	.code { margin-top: 24px; font-size: 12px; color: #4d4d4d; letter-spacing: 0.02em; }
+	.go {
+		display: inline-block; margin-top: 24px; padding: 9px 16px; border-radius: 8px;
+		background: #ededed; color: #0a0a0a; text-decoration: none; font-weight: 500;
+	}
+	.card-image {
+		width: 100%; margin-top: 20px; border-radius: 10px; border: 1px solid #2e2e2e;
+	}
 `;
 
 function escapeHtml(value: string): string {
@@ -43,7 +50,7 @@ function escapeHtml(value: string): string {
 		.replace(/"/g, '&quot;');
 }
 
-function shell(title: string, body: string): string {
+function shell(title: string, body: string, head = ''): string {
 	return `<!doctype html>
 <html lang="en">
 <head>
@@ -51,7 +58,7 @@ function shell(title: string, body: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>${escapeHtml(title)}</title>
-<style>${SHELL_STYLES}</style>
+${head}<style>${SHELL_STYLES}</style>
 </head>
 <body><main>${body}</main></body>
 </html>`;
@@ -68,6 +75,71 @@ export function errorPage(opts: { title: string; message: string; code: number }
 		<p>${escapeHtml(opts.message)}</p>
 		<div class="code">${opts.code}</div>`
 	);
+}
+
+/**
+ * The card a chat client unfurls. The `<head>` is the whole point — the visible
+ * body is only there for the occasional human who is served this page, and
+ * gives them a way onwards.
+ *
+ * There is deliberately no `<meta http-equiv="refresh">`: some crawlers follow
+ * one, which would quietly undo a branded preview.
+ */
+export function previewPage(opts: {
+	title: string;
+	description: string | null;
+	image: string | null;
+	siteName: string | null;
+	largeImage: boolean;
+	/** The short URL, which is what the card should point at. */
+	url: string;
+	/** Where the link goes, or `null` to keep that private. */
+	destination: string | null;
+}): string {
+	const tag = (property: string, content: string | null) =>
+		content ? `<meta property="${property}" content="${escapeHtml(content)}">\n` : '';
+	const named = (name: string, content: string | null) =>
+		content ? `<meta name="${name}" content="${escapeHtml(content)}">\n` : '';
+
+	const head =
+		tag('og:type', 'website') +
+		tag('og:url', opts.url) +
+		tag('og:title', opts.title) +
+		tag('og:description', opts.description) +
+		tag('og:image', opts.image) +
+		tag('og:site_name', opts.siteName) +
+		named('description', opts.description) +
+		named('twitter:card', opts.image && opts.largeImage ? 'summary_large_image' : 'summary') +
+		named('twitter:title', opts.title) +
+		named('twitter:description', opts.description) +
+		named('twitter:image', opts.image) +
+		`<link rel="canonical" href="${escapeHtml(opts.url)}">\n`;
+
+	const host = opts.destination ? hostname(opts.destination) : null;
+
+	return shell(
+		opts.title,
+		`<div class="mark">${LINK_ICON}</div>
+		<h1>${escapeHtml(opts.title)}</h1>
+		${opts.description ? `<p>${escapeHtml(opts.description)}</p>` : ''}
+		${opts.image ? `<img class="card-image" src="${escapeHtml(opts.image)}" alt="">` : ''}
+		${
+			opts.destination
+				? `<a class="go" href="${escapeHtml(opts.destination)}" rel="noreferrer">Continue${
+						host ? ` to ${escapeHtml(host)}` : ''
+					}</a>`
+				: ''
+		}`,
+		head
+	);
+}
+
+function hostname(url: string): string | null {
+	try {
+		return new URL(url).hostname.replace(/^www\./, '');
+	} catch {
+		return null;
+	}
 }
 
 export function passwordPage(opts: { action: string; error?: string }): string {

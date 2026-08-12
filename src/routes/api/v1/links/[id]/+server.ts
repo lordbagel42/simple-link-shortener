@@ -1,6 +1,13 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
-import { apiError, apiLink, parseTimestamp, requireApiUser, utmFrom } from '$lib/server/api';
+import {
+	apiError,
+	apiLink,
+	parseTimestamp,
+	previewFrom,
+	requireApiUser,
+	utmFrom
+} from '$lib/server/api';
 import { LinkError, deleteLink, getLink, updateLink, type LinkInput } from '$lib/server/links';
 import { getAnalytics } from '$lib/server/analytics';
 import { parseRange } from '$lib/types';
@@ -40,6 +47,9 @@ export const PATCH: RequestHandler = async (event) => {
 	const patch: Partial<LinkInput> = {};
 	if ('destination' in body) patch.destination = String(body.destination);
 	if ('slug' in body) patch.slug = String(body.slug);
+	if ('aliases' in body) {
+		patch.aliases = Array.isArray(body.aliases) ? body.aliases.map(String) : [];
+	}
 	if ('title' in body) patch.title = body.title == null ? null : String(body.title);
 	if ('description' in body) {
 		patch.description = body.description == null ? null : String(body.description);
@@ -55,6 +65,7 @@ export const PATCH: RequestHandler = async (event) => {
 	if ('forwardQuery' in body) patch.forwardQuery = Boolean(body.forwardQuery);
 	if ('redirectStatus' in body) patch.redirectStatus = Number(body.redirectStatus);
 	if ('rules' in body) patch.rules = Array.isArray(body.rules) ? (body.rules as never) : [];
+	if ('preview' in body) Object.assign(patch, previewFrom(body));
 	if ('utm' in body) Object.assign(patch, utmFrom(body));
 
 	try {

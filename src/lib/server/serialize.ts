@@ -1,14 +1,15 @@
-import type { Link } from './db/schema';
+import type { LinkWithSlugs } from './links';
 import type { SerializedLink } from '$lib/types';
 
 /**
  * Prepare a link row for the browser: epoch-ms dates, and the password hash
  * reduced to a boolean so it never leaves the server.
  */
-export function serializeLink(link: Link): SerializedLink {
+export function serializeLink(link: LinkWithSlugs): SerializedLink {
 	return {
 		id: link.id,
 		slug: link.slug,
+		aliases: link.slugs.slice(1),
 		destination: link.destination,
 		title: link.title,
 		description: link.description,
@@ -26,6 +27,8 @@ export function serializeLink(link: Link): SerializedLink {
 		utmTerm: link.utmTerm,
 		utmContent: link.utmContent,
 		redirectStatus: link.redirectStatus,
+		previewMode: link.previewMode,
+		previewImage: link.previewImage,
 		rules: link.rules ?? [],
 		clickCount: link.clickCount,
 		uniqueCount: link.uniqueCount,

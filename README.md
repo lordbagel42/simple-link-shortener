@@ -52,9 +52,9 @@ small HTML pages the redirect path can return — with no framework attached.
 The app keeps only the SvelteKit-shaped edges: `getEnv` in
 `src/lib/server/env.ts` and `handleShortLink` in `src/lib/server/redirect.ts`.
 
-Because the D1 statements are shared, a migration that touches `link` or
-`click` needs a matching edit in `packages/links-core/src/d1.ts` and a new
-release of the package.
+Because the D1 statements are shared, a migration that touches `link`,
+`link_slug`, or `click` needs a matching edit in
+`packages/links-core/src/d1.ts` and a new release of the package.
 
 Releases go out from `.github/workflows/release-core.yml`, which publishes on a
 matching tag using the workflow's built-in `GITHUB_TOKEN` — no personal access
@@ -81,6 +81,7 @@ workspace, so its own CI needs no registry credentials.
 | `raygen.dev/l/<slug>` | `links-redirect` — KV lookup, 302, click logged via `waitUntil` |
 | `link.raygen.dev/<slug>` | `links-redirect`, at the root of a dedicated host |
 | `link.raygen.dev/l/<slug>` | Also works — the prefix is accepted everywhere |
+| `link.raygen.dev/f/<anything>` | A pattern slug, if one claims the path |
 | `link.raygen.dev/<anything else>` | 404, except `/` which bounces to the dashboard |
 | `links.raygen.dev/*` | `links` — the dashboard and REST API |
 | `raygen.dev/<anything else>` | Neither Worker's route — left to whatever else runs on the zone |
@@ -91,9 +92,12 @@ Matching is driven by two settings, shared by both Workers:
   makes `raygen.dev/l/abc` work without claiming the rest of the apex, and what
   makes `localhost:5173/l/abc` behave identically in development.
 - **`SHORT_HOSTS`** (comma-separated) lists hosts given over entirely to short
-  links. On those, every single-segment path is a slug and nothing else is
-  served — which is why `link.raygen.dev` can be a bare `/<slug>` domain while
-  the apex cannot.
+  links. On those, every path is a slug and nothing else is served — which is
+  why `link.raygen.dev` can be a bare `/<slug>` domain while the apex cannot.
+
+A slug is normally one path segment, resolved by a single KV read. Multi-segment
+paths are accepted too, because pattern slugs span more than one — they resolve
+to nothing unless a pattern claims them.
 
 The apex is deliberately **not** in `SHORT_HOSTS`: it only answers under the
 prefix, so the rest of `raygen.dev` stays untouched.
@@ -101,7 +105,30 @@ prefix, so the rest of `raygen.dev` stays untouched.
 ## Features
 
 **Links** — custom or generated slugs, titles, tags, notes, enable/disable,
-`301`/`302`/`307`/`308` status choice, QR codes (PNG and SVG).
+`301`/`302`/`307`/`308` status choice, QR codes (PNG and SVG), and a duplicate
+action that opens the create dialog prefilled from an existing link.
+
+**Several slugs per link** — a link can answer to any number of slugs, all
+reaching the same destination and all sharing one set of analytics. Each one is
+its own KV key, so an alias resolves in exactly the same single read as the
+primary. `link_slug` is what makes a slug unique across the store; `link.slug`
+is the primary, which is what the dashboard shows and what QR codes point at.
+
+**Pattern slugs** — `f/:form` matches `link.raygen.dev/f/anything` and passes
+what it captured to the destination:
+`https://forms.raygen.dev/form/:form`. A trailing `*` takes the rest of the path
+(`docs/*` → `https://docs.example.com/*`). A pattern always begins with a
+literal segment, so ordinary one-segment links can never be shadowed by one —
+and never pay for the pattern lookup either. Patterns are matched against a
+single KV value listing them all, consulted only when an exact lookup misses on
+a multi-segment path.
+
+**Link previews** — what Slack, Discord, iMessage and the rest unfurl. Per link,
+either the destination's own Open Graph card (fetched once, cached, and served
+under the short URL) or a branded card of your own with the link's title, notes,
+and an optional image. Password-protected links always unfurl as a plain card
+that gives nothing away. Anything that cannot be resolved falls back to the
+plain redirect, and preview requests are never counted as clicks.
 
 **Rules and limits** — expiry dates, click caps that disable the link when
 reached, a fallback URL for expired links, password protection (PBKDF2 via Web
@@ -241,11 +268,18 @@ curl -X POST https://links.raygen.dev/api/v1/links \
   -d '{
         "destination": "https://example.com/a/very/long/path",
         "slug": "launch",
+        "aliases": ["launch-2026", "go/launch"],
         "tags": ["marketing"],
         "expiresAt": "2026-12-31T00:00:00Z",
+        "preview": { "mode": "branded" },
         "utm": { "source": "newsletter" }
       }'
 ```
+
+`aliases` are the extra slugs beyond `slug`; responses carry them back alongside
+`shortUrls`, one URL per slug. `preview.mode` is `target` (the default — the
+destination's own card), `branded`, or `off`, and `preview.image` sets the card
+image for `branded`.
 
 | Method | Path | Does |
 | --- | --- | --- |
@@ -311,6 +345,17 @@ edge cache** button that republishes everything.
 
 **Edits take up to a minute to propagate.** KV records are read with a 60-second
 edge TTL, which is KV's own floor.
+
+**Every slug is a full KV record.** A link with four slugs is four KV writes on
+save and one read on resolve — the read path never pays for aliases. Pattern
+slugs are the exception: they cannot be found by key, so they live in one index
+value that is republished whenever a pattern changes.
+
+**A preview costs one subrequest, once.** `target` previews fetch the
+destination's `<head>` (capped, with a 2.5s timeout) and cache the tags for an
+hour, keyed by destination URL so links sharing one share the fetch. Failures
+are cached briefly too, and fall back to the redirect rather than a card built
+on nothing.
 
 **Click caps overshoot slightly.** The cap is enforced against the D1 counter
 after each click, then pushed back into KV — a handful of clicks can land in the

@@ -1,10 +1,26 @@
-import { and, desc, eq, like, or, sql, asc } from 'drizzle-orm';
+import { and, asc, desc, eq, getTableColumns, inArray, like, or, sql } from 'drizzle-orm';
 import { getDb } from './db';
-import { click, link as linkTable, type Link, type LinkRule } from './db/schema';
+import {
+	click,
+	link as linkTable,
+	linkSlug,
+	type Link,
+	type LinkRule,
+	type PreviewMode
+} from './db/schema';
 import type { Env } from './env';
-import { hashPassword, newId } from '@lordbagel42/links-core';
-import { deleteLinkRecord, writeLinkRecord } from '@lordbagel42/links-core';
-import { generateSlug, validateDestination, validateSlug } from '$lib/slug';
+import { hashPassword, newId, isPattern, allSlugs, isPreviewMode } from '@lordbagel42/links-core';
+import {
+	deleteLinkRecords,
+	writeLinkRecord,
+	writePatternIndex
+} from '@lordbagel42/links-core';
+import {
+	MAX_SLUGS_PER_LINK,
+	generateSlug,
+	validateDestination,
+	validateSlugOrPattern
+} from '$lib/slug';
 
 export class LinkError extends Error {
 	constructor(
@@ -16,8 +32,18 @@ export class LinkError extends Error {
 	}
 }
 
+/**
+ * A link row plus every slug that resolves to it, primary first.
+ *
+ * Nothing in the app deals in a bare `Link`: the slugs come back from the same
+ * statement as the row itself, and every write publishes them together.
+ */
+export type LinkWithSlugs = Link & { slugs: string[] };
+
 export type LinkInput = {
 	slug?: string;
+	/** Extra slugs beyond the primary. Each is a KV key of its own. */
+	aliases?: string[];
 	destination: string;
 	title?: string | null;
 	description?: string | null;
@@ -35,6 +61,8 @@ export type LinkInput = {
 	utmTerm?: string | null;
 	utmContent?: string | null;
 	redirectStatus?: number;
+	previewMode?: PreviewMode;
+	previewImage?: string | null;
 	rules?: LinkRule[];
 };
 
@@ -49,11 +77,31 @@ export type ListOptions = {
 	offset?: number;
 };
 
+/**
+ * The link columns plus its aliases, gathered in one statement. Slugs cannot
+ * contain a comma, so `group_concat`'s default separator is unambiguous.
+ */
+function linkSelection() {
+	return {
+		...getTableColumns(linkTable),
+		aliasList: sql<string | null>`(
+			select group_concat(${linkSlug.slug}) from ${linkSlug}
+			where ${linkSlug.linkId} = ${linkTable.id} and ${linkSlug.isPrimary} = 0
+		)`
+	};
+}
+
+type LinkRow = Link & { aliasList: string | null };
+
+function withSlugs({ aliasList, ...link }: LinkRow): LinkWithSlugs {
+	return { ...link, slugs: allSlugs(link.slug, aliasList ? aliasList.split(',') : []) };
+}
+
 export async function listLinks(
 	env: Env,
 	userId: string,
 	options: ListOptions = {}
-): Promise<{ links: Link[]; total: number }> {
+): Promise<{ links: LinkWithSlugs[]; total: number }> {
 	const db = getDb(env);
 	const filters = [eq(linkTable.userId, userId)];
 
@@ -63,7 +111,11 @@ export async function listLinks(
 			or(
 				like(sql`lower(${linkTable.slug})`, needle),
 				like(sql`lower(${linkTable.destination})`, needle),
-				like(sql`lower(coalesce(${linkTable.title}, ''))`, needle)
+				like(sql`lower(coalesce(${linkTable.title}, ''))`, needle),
+				// Aliases are short links too, so searching has to find them.
+				sql`exists (select 1 from ${linkSlug}
+					where ${linkSlug.linkId} = ${linkTable.id}
+					  and lower(${linkSlug.slug}) like ${needle})`
 			)!
 		);
 	}
@@ -83,7 +135,7 @@ export async function listLinks(
 
 	const [links, [counted]] = await Promise.all([
 		db
-			.select()
+			.select(linkSelection())
 			.from(linkTable)
 			.where(where)
 			.orderBy(order)
@@ -92,20 +144,28 @@ export async function listLinks(
 		db.select({ value: sql<number>`count(*)` }).from(linkTable).where(where)
 	]);
 
-	return { links, total: counted?.value ?? 0 };
+	return { links: links.map(withSlugs), total: counted?.value ?? 0 };
 }
 
-export async function getLink(env: Env, userId: string, id: string): Promise<Link | null> {
+export async function getLink(
+	env: Env,
+	userId: string,
+	id: string
+): Promise<LinkWithSlugs | null> {
 	const db = getDb(env);
 	const [row] = await db
-		.select()
+		.select(linkSelection())
 		.from(linkTable)
 		.where(and(eq(linkTable.id, id), eq(linkTable.userId, userId)))
 		.limit(1);
-	return row ?? null;
+	return row ? withSlugs(row) : null;
 }
 
-export async function createLink(env: Env, userId: string, input: LinkInput): Promise<Link> {
+export async function createLink(
+	env: Env,
+	userId: string,
+	input: LinkInput
+): Promise<LinkWithSlugs> {
 	const db = getDb(env);
 	const now = new Date();
 
@@ -113,14 +173,17 @@ export async function createLink(env: Env, userId: string, input: LinkInput): Pr
 	if (destinationError) throw new LinkError(destinationError, 'destination');
 
 	const slug = input.slug?.trim() || (await uniqueSlug(env));
-	const slugError = validateSlug(slug);
+	const slugError = validateSlugOrPattern(slug);
 	if (slugError) throw new LinkError(slugError, 'slug');
-	if (await slugTaken(env, slug)) throw new LinkError(`"${slug}" is already in use.`, 'slug');
 
+	const slugs = allSlugs(slug, validateAliases(input.aliases));
+	await assertAvailable(env, slugs);
+
+	const id = newId();
 	const [created] = await db
 		.insert(linkTable)
 		.values({
-			id: newId(),
+			id,
 			slug,
 			userId,
 			destination: input.destination.trim(),
@@ -139,14 +202,20 @@ export async function createLink(env: Env, userId: string, input: LinkInput): Pr
 			utmTerm: emptyToNull(input.utmTerm),
 			utmContent: emptyToNull(input.utmContent),
 			redirectStatus: validStatus(input.redirectStatus),
+			previewMode: validPreviewMode(input.previewMode),
+			previewImage: validatedUrlOrNull(input.previewImage, 'previewImage'),
 			rules: validateRules(input.rules),
 			createdAt: now,
 			updatedAt: now
 		})
 		.returning();
 
-	await writeLinkRecord(env, created);
-	return created;
+	await db.insert(linkSlug).values(slugRows(id, slugs, now));
+
+	await writeLinkRecord(env, created, slugs);
+	await syncPatternIndex(env, slugs);
+
+	return { ...created, slugs };
 }
 
 export async function updateLink(
@@ -154,12 +223,13 @@ export async function updateLink(
 	userId: string,
 	id: string,
 	input: Partial<LinkInput>
-): Promise<Link> {
+): Promise<LinkWithSlugs> {
 	const db = getDb(env);
 	const existing = await getLink(env, userId, id);
 	if (!existing) throw new LinkError('Link not found.');
 
-	const patch: Partial<Link> = { updatedAt: new Date() };
+	const now = new Date();
+	const patch: Partial<Link> = { updatedAt: now };
 
 	if (input.destination !== undefined) {
 		const error = validateDestination(input.destination);
@@ -167,12 +237,21 @@ export async function updateLink(
 		patch.destination = input.destination.trim();
 	}
 
-	if (input.slug !== undefined && input.slug !== existing.slug) {
-		const slug = input.slug.trim();
-		const error = validateSlug(slug);
-		if (error) throw new LinkError(error, 'slug');
-		if (await slugTaken(env, slug)) throw new LinkError(`"${slug}" is already in use.`, 'slug');
-		patch.slug = slug;
+	// The slug set is reconciled as a whole: renaming the primary and editing
+	// the aliases are the same operation as far as KV and the pattern index are
+	// concerned.
+	let nextSlugs: string[] | null = null;
+	if (input.slug !== undefined || input.aliases !== undefined) {
+		const primary = input.slug !== undefined ? input.slug.trim() : existing.slug;
+		if (primary !== existing.slug) {
+			const error = validateSlugOrPattern(primary);
+			if (error) throw new LinkError(error, 'slug');
+			patch.slug = primary;
+		}
+		const aliases =
+			input.aliases !== undefined ? validateAliases(input.aliases) : existing.slugs.slice(1);
+		nextSlugs = allSlugs(primary, aliases);
+		await assertAvailable(env, nextSlugs, id);
 	}
 
 	if (input.title !== undefined) patch.title = emptyToNull(input.title);
@@ -194,6 +273,10 @@ export async function updateLink(
 	if (input.utmTerm !== undefined) patch.utmTerm = emptyToNull(input.utmTerm);
 	if (input.utmContent !== undefined) patch.utmContent = emptyToNull(input.utmContent);
 	if (input.redirectStatus !== undefined) patch.redirectStatus = validStatus(input.redirectStatus);
+	if (input.previewMode !== undefined) patch.previewMode = validPreviewMode(input.previewMode);
+	if (input.previewImage !== undefined) {
+		patch.previewImage = validatedUrlOrNull(input.previewImage, 'previewImage');
+	}
 	if (input.rules !== undefined) patch.rules = validateRules(input.rules);
 
 	const [updated] = await db
@@ -202,11 +285,25 @@ export async function updateLink(
 		.where(and(eq(linkTable.id, id), eq(linkTable.userId, userId)))
 		.returning();
 
-	// A renamed link must stop resolving under its old slug immediately.
-	if (patch.slug && patch.slug !== existing.slug) await deleteLinkRecord(env, existing.slug);
-	await writeLinkRecord(env, updated);
+	const slugs = nextSlugs ?? existing.slugs;
 
-	return updated;
+	if (nextSlugs) {
+		// Replaced wholesale rather than diffed: the primary flag moves around
+		// when a link is renamed, and rewriting the set cannot leave it stale.
+		await db.batch([
+			db.delete(linkSlug).where(eq(linkSlug.linkId, id)),
+			db.insert(linkSlug).values(slugRows(id, nextSlugs, now))
+		]);
+
+		// A slug that is no longer attached must stop resolving immediately.
+		const dropped = existing.slugs.filter((slug) => !includesSlug(nextSlugs!, slug));
+		if (dropped.length > 0) await deleteLinkRecords(env, dropped);
+	}
+
+	await writeLinkRecord(env, updated, slugs);
+	await syncPatternIndex(env, [...existing.slugs, ...slugs]);
+
+	return { ...updated, slugs };
 }
 
 export async function deleteLink(env: Env, userId: string, id: string): Promise<void> {
@@ -215,26 +312,78 @@ export async function deleteLink(env: Env, userId: string, id: string): Promise<
 	if (!existing) throw new LinkError('Link not found.');
 
 	// D1 does not enforce `on delete cascade` unless foreign keys are on for the
-	// session, so clicks are removed explicitly.
+	// session, so clicks and slugs are removed explicitly.
 	await db.delete(click).where(eq(click.linkId, id));
+	await db.delete(linkSlug).where(eq(linkSlug.linkId, id));
 	await db.delete(linkTable).where(and(eq(linkTable.id, id), eq(linkTable.userId, userId)));
-	await deleteLinkRecord(env, existing.slug);
+
+	await deleteLinkRecords(env, existing.slugs);
+	await syncPatternIndex(env, existing.slugs);
 }
 
 /** Republish every link into KV. Useful after restoring or migrating a database. */
 export async function resyncLinks(env: Env, userId: string): Promise<number> {
 	const db = getDb(env);
-	const rows = await db.select().from(linkTable).where(eq(linkTable.userId, userId));
-	for (const row of rows) await writeLinkRecord(env, row);
+	const rows = await db.select(linkSelection()).from(linkTable).where(eq(linkTable.userId, userId));
+	for (const row of rows) {
+		const link = withSlugs(row);
+		await writeLinkRecord(env, link, link.slugs);
+	}
+	// A repair should leave the pattern index correct whether or not this user
+	// happens to own any patterns.
+	await rebuildPatternIndex(env);
 	return rows.length;
+}
+
+/* --- slugs ---------------------------------------------------------------- */
+
+function slugRows(linkId: string, slugs: string[], now: Date) {
+	return slugs.map((slug, index) => ({
+		slug,
+		linkId,
+		isPrimary: index === 0,
+		isPattern: isPattern(slug),
+		createdAt: now
+	}));
+}
+
+function includesSlug(slugs: string[], slug: string): boolean {
+	return slugs.some((candidate) => candidate.toLowerCase() === slug.toLowerCase());
+}
+
+/**
+ * Slugs are compared case-insensitively because KV keys are lowercased — `Docs`
+ * and `docs` would be the same short link even though SQLite sees two strings.
+ */
+async function assertAvailable(
+	env: Env,
+	slugs: string[],
+	excludeLinkId?: string
+): Promise<void> {
+	if (slugs.length === 0) return;
+	const db = getDb(env);
+	const lowered = slugs.map((slug) => slug.toLowerCase());
+
+	const rows = await db
+		.select({ slug: linkSlug.slug, linkId: linkSlug.linkId })
+		.from(linkSlug)
+		.where(inArray(sql`lower(${linkSlug.slug})`, lowered));
+
+	for (const row of rows) {
+		if (row.linkId === excludeLinkId) continue;
+		throw new LinkError(
+			`"${row.slug}" is already in use.`,
+			includesSlug([slugs[0]], row.slug) ? 'slug' : 'aliases'
+		);
+	}
 }
 
 export async function slugTaken(env: Env, slug: string): Promise<boolean> {
 	const db = getDb(env);
 	const [row] = await db
-		.select({ id: linkTable.id })
-		.from(linkTable)
-		.where(eq(linkTable.slug, slug))
+		.select({ slug: linkSlug.slug })
+		.from(linkSlug)
+		.where(sql`lower(${linkSlug.slug}) = ${slug.toLowerCase()}`)
 		.limit(1);
 	return Boolean(row);
 }
@@ -245,6 +394,42 @@ async function uniqueSlug(env: Env): Promise<string> {
 		if (!(await slugTaken(env, slug))) return slug;
 	}
 	throw new LinkError('Could not allocate a unique slug. Try again.', 'slug');
+}
+
+function validateAliases(aliases: string[] | undefined): string[] {
+	if (!aliases) return [];
+	const cleaned = aliases.map((alias) => alias.trim()).filter(Boolean);
+
+	for (const alias of cleaned) {
+		const error = validateSlugOrPattern(alias);
+		if (error) throw new LinkError(error, 'aliases');
+	}
+	if (cleaned.length + 1 > MAX_SLUGS_PER_LINK) {
+		throw new LinkError(`A link can have at most ${MAX_SLUGS_PER_LINK} slugs.`, 'aliases');
+	}
+	return cleaned;
+}
+
+/**
+ * The redirect worker matches patterns against a single KV value listing them
+ * all, so any change to a pattern slug has to republish it. Links without
+ * patterns — nearly all of them — skip the query entirely.
+ */
+async function syncPatternIndex(env: Env, touched: string[]): Promise<void> {
+	if (!touched.some(isPattern)) return;
+	await rebuildPatternIndex(env);
+}
+
+async function rebuildPatternIndex(env: Env): Promise<void> {
+	const db = getDb(env);
+	const rows = await db
+		.select({ slug: linkSlug.slug })
+		.from(linkSlug)
+		.where(eq(linkSlug.isPattern, true));
+	await writePatternIndex(
+		env,
+		rows.map((row) => row.slug)
+	);
 }
 
 export async function allTags(env: Env, userId: string): Promise<string[]> {
@@ -279,6 +464,10 @@ function toDate(value: number | null | undefined): Date | null {
 
 function validStatus(value: number | undefined): number {
 	return value && VALID_STATUSES.has(value) ? value : 302;
+}
+
+function validPreviewMode(value: PreviewMode | undefined): PreviewMode {
+	return isPreviewMode(value) ? value : 'target';
 }
 
 function validatedUrlOrNull(value: string | null | undefined, field: string): string | null {

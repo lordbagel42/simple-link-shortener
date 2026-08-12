@@ -15,6 +15,13 @@
       "when": 1786244402502,
       "tag": "0001_click_raw_ip",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1786499049928,
+      "tag": "0002_link_slug",
+      "breakpoints": true
     }
   ]
 }

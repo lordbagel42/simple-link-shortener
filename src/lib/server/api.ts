@@ -1,7 +1,8 @@
 import { json, type RequestEvent } from '@sveltejs/kit';
 import { getEnv, shortUrlFor, type Env } from './env';
 import { userIdFromApiKey } from './api-keys';
-import type { Link } from './db/schema';
+import type { LinkWithSlugs } from './links';
+import type { PreviewMode } from './db/schema';
 
 /**
  * Authenticate an API request with either a dashboard session cookie or an
@@ -24,11 +25,14 @@ export async function requireApiUser(
 	return { env, userId };
 }
 
-export function apiLink(link: Link, env: Env, url: URL) {
+export function apiLink(link: LinkWithSlugs, env: Env, url: URL) {
 	return {
 		id: link.id,
 		slug: link.slug,
 		shortUrl: shortUrlFor(env, url, link.slug),
+		/** Extra slugs resolving to this link, and a short URL for each. */
+		aliases: link.slugs.slice(1),
+		shortUrls: link.slugs.map((slug) => shortUrlFor(env, url, slug)),
 		destination: link.destination,
 		title: link.title,
 		description: link.description,
@@ -40,6 +44,7 @@ export function apiLink(link: Link, env: Env, url: URL) {
 		fallbackUrl: link.fallbackUrl,
 		forwardQuery: link.forwardQuery,
 		redirectStatus: link.redirectStatus,
+		preview: { mode: link.previewMode, image: link.previewImage },
 		rules: link.rules,
 		utm: {
 			source: link.utmSource,
@@ -65,6 +70,15 @@ export function parseTimestamp(value: unknown): number | null {
 	if (value == null) return null;
 	const parsed = typeof value === 'number' ? value : Date.parse(String(value));
 	return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** Flattens the API's nested `preview` object onto the column names. */
+export function previewFrom(body: Record<string, unknown>) {
+	const preview = (body.preview ?? {}) as Record<string, unknown>;
+	return {
+		previewMode: preview.mode == null ? undefined : (String(preview.mode) as PreviewMode),
+		previewImage: preview.image == null ? null : String(preview.image)
+	};
 }
 
 /** Flattens the API's nested `utm` object onto the column names. */

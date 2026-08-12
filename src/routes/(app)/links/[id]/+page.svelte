@@ -4,12 +4,14 @@
 		ArrowLeft,
 		ExternalLink,
 		Pencil,
+		Copy,
 		QrCode,
 		Trash2,
 		Lock,
 		Clock,
 		Gauge,
-		Target
+		Target,
+		Share2
 	} from '@lucide/svelte';
 	import { Button, buttonVariants } from '$lib/components/ui/button';
 	import { Badge } from '$lib/components/ui/badge';
@@ -24,6 +26,7 @@
 	let { data } = $props();
 
 	let editOpen = $state(false);
+	let duplicateOpen = $state(false);
 	let qrOpen = $state(false);
 	let confirmingDelete = $state(false);
 
@@ -47,6 +50,16 @@
 				icon: Target,
 				label: 'Targeting',
 				value: `${data.link.rules.length} rule${data.link.rules.length === 1 ? '' : 's'}`
+			},
+			{
+				icon: Share2,
+				label: 'Unfurls as',
+				value:
+					data.link.previewMode === 'target'
+						? "The destination's card"
+						: data.link.previewMode === 'branded'
+							? 'A card of your own'
+							: 'No preview page'
 			}
 		].filter(Boolean) as { icon: typeof Clock; label: string; value: string }[]
 	);
@@ -90,6 +103,25 @@
 					<ExternalLink class="size-3.5" />
 				</a>
 
+				{#if data.link.aliases.length > 0}
+					<div class="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+						<span class="text-muted-foreground text-xs">Also answers to</span>
+						{#each data.link.aliases as alias (alias)}
+							<span class="flex items-center gap-1">
+								<a
+									href="{data.shortBase}/{alias}"
+									target="_blank"
+									rel="noreferrer noopener"
+									class="font-mono text-xs hover:underline"
+								>
+									/{alias}
+								</a>
+								<CopyButton value="{data.shortBase}/{alias}" label="Copy {alias}" />
+							</span>
+						{/each}
+					</div>
+				{/if}
+
 				{#if data.link.tags.length > 0}
 					<div class="mt-2 flex flex-wrap gap-1">
 						{#each data.link.tags as tag (tag)}
@@ -100,6 +132,11 @@
 			</div>
 
 			<div class="flex items-center gap-2">
+				<Button variant="outline" size="sm" onclick={() => (duplicateOpen = true)}>
+					<Copy class="size-4" />
+					Duplicate
+				</Button>
+
 				<Button variant="outline" size="sm" onclick={() => (qrOpen = true)}>
 					<QrCode class="size-4" />
 					QR
@@ -152,6 +189,7 @@
 </div>
 
 <LinkDialog bind:open={editOpen} link={data.link} shortBase={data.shortBase} />
+<LinkDialog bind:open={duplicateOpen} link={data.link} duplicate shortBase={data.shortBase} />
 <QrDialog bind:open={qrOpen} url={shortUrl} slug={data.link.slug} />
 
 <AlertDialog.Root bind:open={confirmingDelete}>

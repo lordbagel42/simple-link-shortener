@@ -3,7 +3,7 @@ import type { Actions, PageServerLoad } from './$types';
 import { getEnv, shortBase } from '$lib/server/env';
 import { getAnalytics, recentClicks } from '$lib/server/analytics';
 import { parseRange } from '$lib/types';
-import { LinkError, deleteLink, getLink, updateLink } from '$lib/server/links';
+import { LinkError, createLink, deleteLink, getLink, updateLink } from '$lib/server/links';
 import { parseLinkForm } from '$lib/server/form';
 import { serializeLink } from '$lib/server/serialize';
 
@@ -30,6 +30,20 @@ export const load: PageServerLoad = async (event) => {
 };
 
 export const actions: Actions = {
+	/** Duplicating from a link's own page lands on the copy. */
+	create: async (event) => {
+		const env = getEnv(event);
+		const form = await event.request.formData();
+		let created;
+		try {
+			created = await createLink(env, event.locals.user!.id, parseLinkForm(form));
+		} catch (err) {
+			if (err instanceof LinkError) return fail(400, { message: err.message, field: err.field });
+			throw err;
+		}
+		redirect(303, `/links/${created.id}`);
+	},
+
 	update: async (event) => {
 		const env = getEnv(event);
 		const form = await event.request.formData();

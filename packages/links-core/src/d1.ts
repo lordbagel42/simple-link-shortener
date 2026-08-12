@@ -1,6 +1,8 @@
 import type { Env } from './env.js';
 import type { LinkRecord } from './link-record.js';
+import { allSlugs } from './link-record.js';
 import type { LinkRule } from './types.js';
+import { DEFAULT_PREVIEW_MODE, isPreviewMode } from './types.js';
 import type { VisitorSnapshot } from './clicks.js';
 
 /**
@@ -17,14 +19,28 @@ import type { VisitorSnapshot } from './clicks.js';
  */
 
 /** Columns of `link` that `LinkRecord` is built from. */
-const LINK_COLUMNS = `id, slug, destination, user_id, enabled, password_hash, expires_at,
-	max_clicks, fallback_url, forward_query, redirect_status, rules,
-	utm_source, utm_medium, utm_campaign, utm_term, utm_content`;
+const LINK_COLUMNS = `link.id, link.slug, link.destination, link.title, link.description,
+	link.user_id, link.enabled,
+	link.password_hash, link.expires_at, link.max_clicks, link.fallback_url,
+	link.forward_query, link.redirect_status, link.preview_mode, link.preview_image,
+	link.rules, link.utm_source, link.utm_medium, link.utm_campaign, link.utm_term,
+	link.utm_content`;
+
+/**
+ * Every slug of the link, gathered in the same statement. Slugs cannot contain
+ * a comma (see `SLUG_PATTERN` in the app), so `group_concat`'s default
+ * separator is unambiguous.
+ */
+const LINK_SLUGS = `(SELECT group_concat(alias.slug) FROM link_slug alias
+	WHERE alias.link_id = link.id) AS slugs`;
 
 type LinkRow = {
 	id: string;
 	slug: string;
+	slugs: string | null;
 	destination: string;
+	title: string | null;
+	description: string | null;
 	user_id: string;
 	enabled: number;
 	password_hash: string | null;
@@ -33,6 +49,8 @@ type LinkRow = {
 	fallback_url: string | null;
 	forward_query: number;
 	redirect_status: number;
+	preview_mode: string | null;
+	preview_image: string | null;
 	rules: string | null;
 	utm_source: string | null;
 	utm_medium: string | null;
@@ -53,7 +71,10 @@ function toRecord(row: LinkRow): LinkRecord {
 		id: row.id,
 		userId: row.user_id,
 		slug: row.slug,
+		slugs: allSlugs(row.slug, row.slugs ? row.slugs.split(',') : []),
 		destination: row.destination,
+		title: row.title,
+		description: row.description,
 		enabled: row.enabled === 1,
 		expiresAt: row.expires_at,
 		maxClicks: row.max_clicks,
@@ -61,6 +82,8 @@ function toRecord(row: LinkRow): LinkRecord {
 		forwardQuery: row.forward_query === 1,
 		redirectStatus: row.redirect_status,
 		passwordHash: row.password_hash,
+		previewMode: isPreviewMode(row.preview_mode) ? row.preview_mode : DEFAULT_PREVIEW_MODE,
+		previewImage: row.preview_image,
 		rules,
 		utm: {
 			source: row.utm_source,
@@ -72,12 +95,33 @@ function toRecord(row: LinkRow): LinkRecord {
 	};
 }
 
-/** Used only when KV misses, to repopulate the cache from the source of truth. */
+/**
+ * Used only when KV misses, to repopulate the cache from the source of truth.
+ *
+ * Matches the primary slug or any alias. `link.slug` is checked directly as
+ * well as through `link_slug` so a primary slug keeps resolving even if the
+ * alias table were somehow behind — the two are written together, but the
+ * redirect path is the last place that should depend on it.
+ */
 export async function findLinkBySlug(env: Env, slug: string): Promise<LinkRecord | null> {
-	const row = await env.DB.prepare(`SELECT ${LINK_COLUMNS} FROM link WHERE slug = ? LIMIT 1`)
-		.bind(slug)
+	const row = await env.DB.prepare(
+		`SELECT ${LINK_COLUMNS}, ${LINK_SLUGS}
+		 FROM link
+		 WHERE link.slug = ?
+		    OR link.id = (SELECT link_id FROM link_slug WHERE link_slug.slug = ?)
+		 LIMIT 1`
+	)
+		.bind(slug, slug)
 		.first<LinkRow>();
 	return row ? toRecord(row) : null;
+}
+
+/** Rebuilds the KV pattern index when it is missing. */
+export async function findPatternSlugs(env: Env): Promise<string[]> {
+	const { results } = await env.DB.prepare(
+		`SELECT slug FROM link_slug WHERE is_pattern = 1`
+	).all<{ slug: string }>();
+	return results.map((row) => row.slug);
 }
 
 /** Has this visitor hash been seen on this link before? Drives unique counts. */

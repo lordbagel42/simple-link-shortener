@@ -25,3 +25,23 @@ export const RULE_TYPES: LinkRule['type'][] = [
 	'language',
 	'referer'
 ];
+
+/**
+ * What a link unfurls into when a chat client (Slack, Discord, iMessage…) or a
+ * crawler asks for it, instead of following the redirect.
+ *
+ * - `target` — fetch the destination's own Open Graph tags and re-serve them
+ *   under the short URL, so the card looks exactly like the destination's.
+ * - `branded` — a card of our own: the link's title, notes, and where it goes.
+ * - `off` — no preview page at all; crawlers get the same redirect as everyone
+ *   else and unfurl whatever they find at the other end.
+ */
+export type PreviewMode = 'target' | 'branded' | 'off';
+
+export const PREVIEW_MODES: PreviewMode[] = ['target', 'branded', 'off'];
+
+export const DEFAULT_PREVIEW_MODE: PreviewMode = 'target';
+
+export function isPreviewMode(value: unknown): value is PreviewMode {
+	return typeof value === 'string' && (PREVIEW_MODES as string[]).includes(value);
+}

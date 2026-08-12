@@ -1,6 +1,6 @@
 {
 	"name": "@lordbagel42/links-core",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "Framework-free short-link resolution: KV/D1 access, targeting rules, click recording, and the redirect hot path. Shared by the links dashboard and the links-agent redirect Worker.",
 	"license": "MIT",
 	"type": "module",

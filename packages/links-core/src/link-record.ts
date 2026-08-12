@@ -1,5 +1,5 @@
-import type { Env } from './env';
-import type { Link, LinkRule } from './db/schema';
+import type { Env } from './env.js';
+import type { Link, LinkRule } from './db/schema.js';
 
 /**
  * The subset of a link that the redirect hot path needs, stored in KV so a

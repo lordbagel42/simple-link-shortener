@@ -1,8 +1,8 @@
-import type { Env } from './env';
-import { newId, sha256Hex } from './crypto';
-import { parseUserAgent, refererDomain, type ParsedUserAgent } from './user-agent';
-import { putLinkRecord, type LinkRecord } from './link-record';
-import { disableLink, hasSeenVisitor, writeClick } from './d1';
+import type { Env } from './env.js';
+import { newId, sha256Hex } from './crypto.js';
+import { parseUserAgent, refererDomain, type ParsedUserAgent } from './user-agent.js';
+import { putLinkRecord, type LinkRecord } from './link-record.js';
+import { disableLink, hasSeenVisitor, writeClick } from './d1.js';
 
 /** Everything we can learn about a visitor before the redirect is issued. */
 export type VisitorSnapshot = {

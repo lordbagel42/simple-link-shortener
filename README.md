@@ -16,18 +16,19 @@ host (`link.raygen.dev/*`), and managed from a dashboard on its own subdomain
 Built with SvelteKit 2 + Svelte 5, Tailwind CSS 4, shadcn-svelte, Drizzle ORM,
 and better-auth.
 
-## Two Workers
+## Two Workers, two repositories
 
 Redirects and the dashboard are deployed as **separate Workers**, because they
-want opposite things from Cloudflare.
+want opposite things from Cloudflare. The redirect Worker lives in its own
+repository, [`lordbagel42/links-agent`](https://github.com/lordbagel42/links-agent).
 
 | | `links-redirect` | `links` |
 | --- | --- | --- |
+| Repository | `lordbagel42/links-agent` | this one |
 | Serves | `raygen.dev/l/*`, `link.raygen.dev/*` | `links.raygen.dev/*` |
 | Placement | **Edge** — nearest the visitor | **Smart** — nearest D1 |
 | Contains | KV read, redirect, deferred click write | SvelteKit, better-auth, the REST API |
 | Bundle | ~23 KiB (8 KiB gzip) | ~3.4 MiB (620 KiB gzip) |
-| Config | `workers/redirect/wrangler.jsonc` | `wrangler.jsonc` |
 
 The dashboard makes several D1 round trips per page, so Smart Placement is a
 clear win there. A redirect makes none on the response path — one edge-cached
@@ -38,12 +39,31 @@ have both is to have two Workers.
 The redirect Worker also skips `nodejs_compat`, static assets, and every
 dependency the dashboard needs. It reaches D1 through raw prepared statements
 rather than Drizzle, which is what takes it from 203 KiB to 23 KiB — on a path
-whose entire job is speed, bundle size is isolate start-up time. Those
-statements live in `src/lib/server/d1.ts`; a migration that touches `link` or
-`click` needs a matching edit there.
+whose entire job is speed, bundle size is isolate start-up time.
 
-Both Workers import the same matching and resolution logic from
-`src/lib/server/redirect.ts`, so the two cannot drift.
+## The shared core
+
+Both Workers resolve links with the same code, published from this repository
+as **`@lordbagel42/links-core`** on GitHub Packages (`packages/links-core`).
+It holds everything between an incoming request and a 302 — KV and D1 access,
+the targeting-rule evaluator, the click writer, the Drizzle schema, and the
+small HTML pages the redirect path can return — with no framework attached.
+
+The app keeps only the SvelteKit-shaped edges: `getEnv` in
+`src/lib/server/env.ts` and `handleShortLink` in `src/lib/server/redirect.ts`.
+
+Because the D1 statements are shared, a migration that touches `link` or
+`click` needs a matching edit in `packages/links-core/src/d1.ts` and a new
+release of the package.
+
+```bash
+npm run build -w @lordbagel42/links-core   # compile it
+npm publish -w @lordbagel42/links-core     # release (needs write:packages)
+```
+
+Consumers — including Cloudflare Workers Builds — need a `.npmrc` pointing
+`@lordbagel42` at `npm.pkg.github.com` and a token with `read:packages`.
+GitHub Packages has no anonymous access, even for public packages.
 
 ## How requests are routed
 
@@ -137,18 +157,17 @@ Social login is enabled automatically when the matching pair of secrets exists:
 ```sh
 npm run db:migrate        # applies drizzle/ to the remote D1 database
 npm run deploy            # the dashboard Worker
-npm run deploy:redirect   # the redirect Worker
 ```
 
-Both Workers must be deployed — they are separate scripts on Cloudflare, and a
-CI job pointed at the repository root only builds the dashboard. Point a second
-build at `workers/redirect/wrangler.jsonc`, or run `npm run deploy:redirect`
-by hand.
+The redirect Worker deploys from its own repository — see
+[`lordbagel42/links-agent`](https://github.com/lordbagel42/links-agent). Both
+must be deployed: they are separate scripts on Cloudflare, and this repository's
+CI only builds the dashboard.
 
 `workers_dev` is off on both, so there is no `*.workers.dev` URL to find:
 
 ```jsonc
-// workers/redirect/wrangler.jsonc
+// links-agent/wrangler.jsonc
 "routes": [
   { "pattern": "link.raygen.dev", "custom_domain": true },
   { "pattern": "raygen.dev/l/*", "zone_name": "raygen.dev" }
@@ -185,11 +204,9 @@ npm run dev
 Vite emulates D1, KV, and Analytics Engine from `wrangler.jsonc`, so the
 dashboard runs at `http://localhost:5173` and short links resolve at
 `http://localhost:5173/l/<slug>` — the dashboard keeps the same matching logic,
-so you rarely need both processes. To exercise the real redirect Worker:
-
-```sh
-npm run dev:redirect   # wrangler dev on port 5174, same local D1 and KV
-```
+so you rarely need both processes. To exercise the real redirect Worker, run
+`npm run dev` in a [`links-agent`](https://github.com/lordbagel42/links-agent)
+checkout alongside this one.
 
 Useful scripts:
 
@@ -198,8 +215,8 @@ Useful scripts:
 | `npm run check` | Typecheck the whole project |
 | `npm run db:generate` | Regenerate migrations after editing the schema |
 | `npm run cf-typegen` | Regenerate binding types after editing `wrangler.jsonc` |
-| `npm run dev:redirect` | Run the redirect Worker against the same local D1 and KV |
-| `npm run deploy:redirect` | Deploy the redirect Worker |
+| `npm run build -w @lordbagel42/links-core` | Compile the shared core |
+| `npm publish -w @lordbagel42/links-core` | Release the shared core to GitHub Packages |
 
 ## API
 

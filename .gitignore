@@ -26,3 +26,6 @@ vite.config.ts.timestamp-*
 .dev.vars
 # Throwaway config for `wrangler deploy --temporary`
 wrangler.temp.jsonc
+
+# Workspace package build output
+packages/*/dist

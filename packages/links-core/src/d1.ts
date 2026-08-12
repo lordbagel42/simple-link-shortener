@@ -1,7 +1,7 @@
-import type { Env } from './env';
-import type { LinkRecord } from './link-record';
-import type { LinkRule } from '$lib/types';
-import type { VisitorSnapshot } from './clicks';
+import type { Env } from './env.js';
+import type { LinkRecord } from './link-record.js';
+import type { LinkRule } from './types.js';
+import type { VisitorSnapshot } from './clicks.js';
 
 /**
  * Raw D1 statements for the redirect hot path.

@@ -1,0 +1,47 @@
+{
+	"name": "@lordbagel42/links-core",
+	"version": "0.1.0",
+	"description": "Framework-free short-link resolution: KV/D1 access, targeting rules, click recording, and the redirect hot path. Shared by the links dashboard and the links-agent redirect Worker.",
+	"license": "MIT",
+	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/lordbagel42/simple-link-shortener.git",
+		"directory": "packages/links-core"
+	},
+	"publishConfig": {
+		"registry": "https://npm.pkg.github.com"
+	},
+	"files": [
+		"dist"
+	],
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"default": "./dist/index.js"
+		},
+		"./schema": {
+			"types": "./dist/db/schema.d.ts",
+			"default": "./dist/db/schema.js"
+		},
+		"./types": {
+			"types": "./dist/types.d.ts",
+			"default": "./dist/types.js"
+		}
+	},
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"check": "tsc -p tsconfig.json --noEmit",
+		"prepublishOnly": "npm run build"
+	},
+	"dependencies": {
+		"drizzle-orm": "^0.45.2"
+	},
+	"peerDependencies": {
+		"@cloudflare/workers-types": ">=4"
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "^5.20260809.1",
+		"typescript": "^6.0.3"
+	}
+}

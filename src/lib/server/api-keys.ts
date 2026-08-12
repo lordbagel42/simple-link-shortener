@@ -2,7 +2,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import { getDb } from './db';
 import { apiKey } from './db/schema';
 import type { Env, WaitUntil } from './env';
-import { newId, sha256Hex } from './crypto';
+import { newId, sha256Hex } from '@lordbagel42/links-core';
 
 const PREFIX = 'lnk_';
 

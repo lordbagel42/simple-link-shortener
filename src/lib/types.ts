@@ -5,24 +5,13 @@
  * SvelteKit refuses to bundle into client code.
  */
 
-/** A targeting rule evaluated on the redirect path before the default destination. */
-export type LinkRule = {
-	/** What to match on. */
-	type: 'country' | 'continent' | 'device' | 'os' | 'language' | 'referer';
-	/** Case-insensitive value to compare against, e.g. `US`, `mobile`, `ios`, `de`. */
-	value: string;
-	/** Where matching visitors go instead of the default destination. */
-	destination: string;
-};
+// The targeting-rule vocabulary is evaluated on the redirect path, so it is
+// defined in the shared core and re-exported here for the components that
+// render the rule editor.
+export type { LinkRule } from '@lordbagel42/links-core';
+export { RULE_TYPES } from '@lordbagel42/links-core';
 
-export const RULE_TYPES: LinkRule['type'][] = [
-	'country',
-	'continent',
-	'device',
-	'os',
-	'language',
-	'referer'
-];
+import type { LinkRule } from '@lordbagel42/links-core';
 
 /** A link as sent to the browser: dates flattened to epoch ms, no password hash. */
 export type SerializedLink = {

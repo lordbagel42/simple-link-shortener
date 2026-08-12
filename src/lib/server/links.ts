@@ -2,8 +2,8 @@ import { and, desc, eq, like, or, sql, asc } from 'drizzle-orm';
 import { getDb } from './db';
 import { click, link as linkTable, type Link, type LinkRule } from './db/schema';
 import type { Env } from './env';
-import { hashPassword, newId } from './crypto';
-import { deleteLinkRecord, writeLinkRecord } from './link-record';
+import { hashPassword, newId } from '@lordbagel42/links-core';
+import { deleteLinkRecord, writeLinkRecord } from '@lordbagel42/links-core';
 import { generateSlug, validateDestination, validateSlug } from '$lib/slug';
 
 export class LinkError extends Error {

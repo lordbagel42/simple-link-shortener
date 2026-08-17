@@ -66,6 +66,13 @@ Unique visitors are a salted per-link hash of IP + user agent.
 their client secrets are set. `SIGNUP_MODE` is `open`, `invite` (against an
 allowlist of emails or `@domain` suffixes) or `closed`. Defaults to `invite`.
 
+**Passkeys** — Touch ID, Windows Hello, Android, or a security key, added and
+named in Settings. The login page offers them from the email field where the
+browser supports it, and from a button where it doesn't. Only public keys are
+stored, so this table is worth nothing to anyone who reads it. Passkeys are
+bound to `APP_URL`'s hostname: change the dashboard's domain and the ones
+already registered stop resolving.
+
 **API** — `/api/v1/links` with bearer-token keys, managed in Settings.
 
 ## Setup
@@ -153,7 +160,9 @@ npm run dev
 ```
 
 Vite emulates D1, KV and Analytics Engine, so the dashboard runs at
-`localhost:5173` and short links resolve at `localhost:5173/l/<slug>`.
+`localhost:5173` and short links resolve at `localhost:5173/l/<slug>`. Passkeys
+work there too — `localhost` counts as a secure origin — but one registered
+against it is useless anywhere else.
 
 | Script | Does |
 | --- | --- |

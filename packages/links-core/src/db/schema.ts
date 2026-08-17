@@ -67,6 +67,52 @@ export const verification = sqliteTable(
 	(t) => [index('verification_identifier_idx').on(t.identifier)]
 );
 
+/**
+ * One row per registered WebAuthn authenticator.
+ *
+ * Nothing secret is stored: the private key never leaves the authenticator, so
+ * a leak of this table lets nobody sign in. Sign-in looks a credential up by
+ * `credentialId`, which is why that — not `id` — carries the unique index.
+ *
+ * The column names are the better-auth passkey plugin's model, mapped through
+ * the property names on this object; renaming a property breaks the adapter.
+ */
+export const passkey = sqliteTable(
+	'passkey',
+	{
+		id: text('id').primaryKey(),
+		userId: text('user_id')
+			.notNull()
+			.references(() => user.id, { onDelete: 'cascade' }),
+		/** What the user called it, e.g. "MacBook Touch ID". */
+		name: text('name'),
+		/** Base64 COSE public key, the half of the pair we're allowed to have. */
+		publicKey: text('public_key').notNull(),
+		/** The authenticator's own identifier for the credential, base64url. */
+		credentialID: text('credential_id').notNull(),
+		/** Signature counter. Authenticators that keep one bump it every assertion. */
+		counter: integer('counter').notNull().default(0),
+		/** `singleDevice` or `multiDevice`. */
+		deviceType: text('device_type').notNull(),
+		/** Synced to a passkey provider rather than bound to this one device. */
+		backedUp: integer('backed_up', { mode: 'boolean' }).notNull().default(false),
+		/** Comma-separated: `internal`, `hybrid`, `usb`, `nfc`, `ble`. */
+		transports: text('transports'),
+		/**
+		 * Identifies the authenticator model, for labelling it in the UI. Often
+		 * all-zero — Apple devices report no AAGUID under the default flow.
+		 */
+		aaguid: text('aaguid'),
+		createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull()
+	},
+	(t) => [
+		uniqueIndex('passkey_credential_id_idx').on(t.credentialID),
+		index('passkey_user_id_idx').on(t.userId)
+	]
+);
+
+export type Passkey = typeof passkey.$inferSelect;
+
 /* -------------------------------------------------------------------------- */
 /*  Links                                                                      */
 /* -------------------------------------------------------------------------- */
@@ -287,6 +333,7 @@ export const schema = {
 	session,
 	account,
 	verification,
+	passkey,
 	link,
 	linkSlug,
 	click,

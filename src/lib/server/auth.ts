@@ -1,5 +1,6 @@
 import { betterAuth } from 'better-auth';
 import { drizzleAdapter } from '@better-auth/drizzle-adapter';
+import { passkey, type PasskeyOptions } from '@better-auth/passkey';
 import { sveltekitCookies } from 'better-auth/svelte-kit';
 import { getRequestEvent } from '$app/server';
 import { getDb, schema } from './db';
@@ -49,7 +50,7 @@ function createAuth(env: Env) {
 			}
 		},
 
-		plugins: [sveltekitCookies(getRequestEvent)]
+		plugins: [passkey(passkeyOptions(env)), sveltekitCookies(getRequestEvent)]
 	});
 }
 
@@ -71,6 +72,29 @@ export function getAuth(env: Env): Auth {
 	const auth = createAuth(env);
 	cache.set(env, auth);
 	return auth;
+}
+
+/**
+ * A passkey is bound to one relying party, and the relying-party ID has to be
+ * the dashboard's hostname — a credential registered against it is unusable
+ * anywhere else, including on the short-link hosts.
+ *
+ * Both it and the expected origin come from `APP_URL`. Left unset, the plugin
+ * takes the hostname from better-auth's own base URL and the origin from the
+ * request, which is what local development wants. `rpName` is skipped: it
+ * defaults to `appName`, which is already 'Links'.
+ */
+function passkeyOptions(env: Env): PasskeyOptions {
+	if (!env.APP_URL) return {};
+
+	let url: URL;
+	try {
+		url = new URL(env.APP_URL);
+	} catch {
+		throw new Error(`APP_URL is not a valid URL: ${env.APP_URL}`);
+	}
+
+	return { rpID: url.hostname, origin: url.origin };
 }
 
 function socialProviders(env: Env) {
